@@ -42,34 +42,39 @@ struct FabricPreset: Codable, Equatable {
 
 /// 版型模板:定义服装在人体上的 2D 贴合区域(归一化坐标,基于 MediaPipe 33 关键点)。
 /// 第一版用"关键点驱动的四边形区域"近似贴合,后续版本可替换为 3D 网格。
-/// 注:CGRect 自 iOS 13 起已遵守 Codable,无需自定义扩展。
 struct GarmentTemplate: Codable, Identifiable {
     let id: String
     let category: GarmentCategory
     let name: String
 
-    /// 服装覆盖区域(归一化 0-1 矩形,相对人体包围盒)
-    let coverage: CGRect
+    /// 服装覆盖区域(归一化 0-1 矩形,相对人体包围盒)。
+    /// 以四个 CGFloat 存储(避免 CGRect Codable 的平台差异),计算属性提供 CGRect。
+    let coverX: CGFloat
+    let coverY: CGFloat
+    let coverW: CGFloat
+    let coverH: CGFloat
     /// 肩部宽度比例(相对躯干)
     let shoulderRatio: CGFloat
     /// 衣长比例(相对躯干高度)
     let lengthRatio: CGFloat
 
+    var coverage: CGRect { CGRect(x: coverX, y: coverY, width: coverW, height: coverH) }
+
     static let templates: [GarmentTemplate] = [
         GarmentTemplate(id: "tshirt", category: .tShirt, name: "基础T恤",
-                        coverage: CGRect(x: 0.12, y: 0.10, width: 0.76, height: 0.55),
+                        coverX: 0.12, coverY: 0.10, coverW: 0.76, coverH: 0.55,
                         shoulderRatio: 0.55, lengthRatio: 0.45),
         GarmentTemplate(id: "shirt", category: .shirt, name: "衬衫",
-                        coverage: CGRect(x: 0.10, y: 0.08, width: 0.80, height: 0.62),
+                        coverX: 0.10, coverY: 0.08, coverW: 0.80, coverH: 0.62,
                         shoulderRatio: 0.56, lengthRatio: 0.52),
         GarmentTemplate(id: "dress", category: .dress, name: "连衣裙",
-                        coverage: CGRect(x: 0.12, y: 0.06, width: 0.76, height: 0.85),
+                        coverX: 0.12, coverY: 0.06, coverW: 0.76, coverH: 0.85,
                         shoulderRatio: 0.55, lengthRatio: 0.75),
         GarmentTemplate(id: "hoodie", category: .hoodie, name: "卫衣",
-                        coverage: CGRect(x: 0.10, y: 0.08, width: 0.80, height: 0.58),
+                        coverX: 0.10, coverY: 0.08, coverW: 0.80, coverH: 0.58,
                         shoulderRatio: 0.57, lengthRatio: 0.48),
         GarmentTemplate(id: "jacket", category: .jacket, name: "夹克",
-                        coverage: CGRect(x: 0.10, y: 0.08, width: 0.80, height: 0.52),
+                        coverX: 0.10, coverY: 0.08, coverW: 0.80, coverH: 0.52,
                         shoulderRatio: 0.58, lengthRatio: 0.42),
     ]
 

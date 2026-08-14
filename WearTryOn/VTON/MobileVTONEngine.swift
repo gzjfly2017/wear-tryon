@@ -157,7 +157,8 @@ final class MobileVTONEngine: VTONEngineProtocol {
         guard let data = CFDataGetBytePtr(image.dataProvider?.data) else {
             throw EngineError.inferenceFailed("图像数据读取失败")
         }
-        let shape = [1, 3, NSNumber(value: h), NSNumber(value: w)]
+        let shape: [NSNumber] = [NSNumber(value: 1), NSNumber(value: 3),
+                                 NSNumber(value: h), NSNumber(value: w)]
         let arr = try MLMultiArray(shape: shape, dataType: .float32)
         let ptr = UnsafeMutablePointer<Float>(OpaquePointer(arr.dataPointer))
         let bytesPerRow = image.bytesPerRow
@@ -305,7 +306,9 @@ final class MobileVTONEngine: VTONEngineProtocol {
     }
 
     private func emptyPromptEmbeds() -> MLMultiArray {
-        let shape = [1, NSNumber(value: 77 + t5Rows), NSNumber(value: textDim)]
+        let shape: [NSNumber] = [NSNumber(value: 1),
+                                 NSNumber(value: 77 + t5Rows),
+                                 NSNumber(value: textDim)]
         return try! MLMultiArray(shape: shape, dataType: .float32)
     }
 

@@ -135,6 +135,7 @@ jobs:
 
       - name: Build (device target, no signing)
         run: |
+          set -o pipefail
           xcodebuild \
             -workspace WearTryOn.xcworkspace \
             -scheme WearTryOn \
@@ -142,7 +143,14 @@ jobs:
             -destination 'generic/platform=iOS' \
             -derivedDataPath build/derived \
             CODE_SIGNING_ALLOWED=NO \
-            build
+            build 2>&1 | tee /tmp/xcodebuild.log || true
+          if grep -q "error:" /tmp/xcodebuild.log; then
+            echo "::group::Compile errors"
+            grep -n "error:" /tmp/xcodebuild.log | head -40
+            echo "::endgroup::"
+            exit 1
+          fi
+          echo "BUILD OK"
 
       - name: Package .app (device build)
         run: |
