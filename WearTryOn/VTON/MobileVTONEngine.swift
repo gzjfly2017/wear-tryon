@@ -181,7 +181,9 @@ final class MobileVTONEngine: VTONEngineProtocol {
         guard let te1 = textEncoder, let te2 = textEncoder2 else {
             throw EngineError.pipelineIncomplete("text encoder 未加载")
         }
-        let input = try MLDictionaryFeatureProvider(dictionary: ["input_ids": ids])
+        let input = try MLDictionaryFeatureProvider(dictionary: [
+            "input_ids": MLFeatureValue(multiArray: ids)
+        ])
         let out1 = try te1.prediction(from: input)
         let out2 = try te2.prediction(from: input)
         guard let e1 = out1.featureValue(for: "hidden_states")?.multiArrayValue,
@@ -203,7 +205,9 @@ final class MobileVTONEngine: VTONEngineProtocol {
         guard let ie = imageEncoder else { throw EngineError.pipelineIncomplete("image encoder 未加载") }
         // DINOv2 输入:518x518 0-1 张量;输出 hidden_states[-2] [1,1370,768],
         // 由合并 denoiser 内部经 encoder_hid_proj(Resampler) 投影。
-        let input = try MLDictionaryFeatureProvider(dictionary: ["image": garmentTensor])
+        let input = try MLDictionaryFeatureProvider(dictionary: [
+            "image": MLFeatureValue(multiArray: garmentTensor)
+        ])
         let out = try ie.prediction(from: input)
         guard let hs = out.featureValue(for: "hidden_states")?.multiArrayValue else {
             throw EngineError.inferenceFailed("服装编码输出缺失")
@@ -215,7 +219,9 @@ final class MobileVTONEngine: VTONEngineProtocol {
 
     private func encodeVAE(_ tensor: MLMultiArray) throws -> MLMultiArray {
         guard let vae else { throw EngineError.pipelineIncomplete("vae 未加载") }
-        let input = try MLDictionaryFeatureProvider(dictionary: ["image": tensor])
+        let input = try MLDictionaryFeatureProvider(dictionary: [
+            "image": MLFeatureValue(multiArray: tensor)
+        ])
         let out = try vae.prediction(from: input)
         guard let latent = out.featureValue(for: "latent")?.multiArrayValue else {
             throw EngineError.inferenceFailed("VAE 编码输出缺失")
@@ -225,7 +231,9 @@ final class MobileVTONEngine: VTONEngineProtocol {
 
     private func decodeVAE(_ latents: MLMultiArray) throws -> UIImage {
         guard let vaeDecoder else { throw EngineError.pipelineIncomplete("vae_decoder 未加载") }
-        let input = try MLDictionaryFeatureProvider(dictionary: ["latent": latents])
+        let input = try MLDictionaryFeatureProvider(dictionary: [
+            "latent": MLFeatureValue(multiArray: latents)
+        ])
         let out = try vaeDecoder.prediction(from: input)
         guard let image = out.featureValue(for: "image")?.multiArrayValue else {
             throw EngineError.inferenceFailed("VAE 解码输出缺失")
@@ -279,15 +287,15 @@ final class MobileVTONEngine: VTONEngineProtocol {
                              clothPromptEmbeds: MLMultiArray,
                              garmentEmbeds: MLMultiArray,
                              denoiser: MLModel) throws -> MLMultiArray {
-        let sigmaArr = try MLMultiArray(shape: [1], dataType: .float32)
+        let sigmaArr = try MLMultiArray(shape: [NSNumber(value: 1)], dataType: .float32)
         sigmaArr[0] = NSNumber(value: sigma)
         let input = try MLDictionaryFeatureProvider(dictionary: [
-            "person_latent": personLatent,
-            "cloth_latent": clothLatent,
-            "sigma": sigmaArr,
-            "text_embeds": promptEmbeds,
-            "cloth_text_embeds": clothPromptEmbeds,
-            "dinov2_hidden_states": garmentEmbeds,
+            "person_latent": MLFeatureValue(multiArray: personLatent),
+            "cloth_latent": MLFeatureValue(multiArray: clothLatent),
+            "sigma": MLFeatureValue(multiArray: sigmaArr),
+            "text_embeds": MLFeatureValue(multiArray: promptEmbeds),
+            "cloth_text_embeds": MLFeatureValue(multiArray: clothPromptEmbeds),
+            "dinov2_hidden_states": MLFeatureValue(multiArray: garmentEmbeds),
         ])
         let out = try denoiser.prediction(from: input)
         guard let velocity = out.featureValue(for: "velocity")?.multiArrayValue else {
@@ -376,7 +384,7 @@ final class MobileVTONEngine: VTONEngineProtocol {
         let a = arrays[0], b = arrays[1]
         let da = a.shape[2].intValue, db = b.shape[2].intValue
         let rows = a.shape[1].intValue, batch = a.shape[0].intValue
-        let result = try MLMultiArray(shape: [batch, NSNumber(value: rows), NSNumber(value: da + db)],
+        let result = try MLMultiArray(shape: [NSNumber(value: batch), NSNumber(value: rows), NSNumber(value: da + db)],
                                       dataType: .float32)
         let ap = UnsafeMutablePointer<Float>(OpaquePointer(a.dataPointer))
         let bp = UnsafeMutablePointer<Float>(OpaquePointer(b.dataPointer))
@@ -392,7 +400,7 @@ final class MobileVTONEngine: VTONEngineProtocol {
         let d = array.shape[2].intValue
         guard d <= width else { throw EngineError.inferenceFailed("pad 宽度不足") }
         let rows = array.shape[1].intValue, batch = array.shape[0].intValue
-        let result = try MLMultiArray(shape: [batch, NSNumber(value: rows), NSNumber(value: width)],
+        let result = try MLMultiArray(shape: [NSNumber(value: batch), NSNumber(value: rows), NSNumber(value: width)],
                                       dataType: .float32)
         let ap = UnsafeMutablePointer<Float>(OpaquePointer(array.dataPointer))
         let rp = UnsafeMutablePointer<Float>(OpaquePointer(result.dataPointer))
@@ -406,7 +414,7 @@ final class MobileVTONEngine: VTONEngineProtocol {
         let batch = array.shape[0].intValue
         let curRows = array.shape[1].intValue
         let width = array.shape[2].intValue
-        let result = try MLMultiArray(shape: [batch, NSNumber(value: curRows + rows), NSNumber(value: width)],
+        let result = try MLMultiArray(shape: [NSNumber(value: batch), NSNumber(value: curRows + rows), NSNumber(value: width)],
                                       dataType: .float32)
         let ap = UnsafeMutablePointer<Float>(OpaquePointer(array.dataPointer))
         let rp = UnsafeMutablePointer<Float>(OpaquePointer(result.dataPointer))

@@ -3,6 +3,8 @@ import CoreVideo
 import UIKit
 
 /// 相机捕获层:负责 30fps 视频帧采集,输出 CVPixelBuffer 给下游(分割/姿态/合成)。
+/// 注意:AVFoundation 会话必须在专用串行队列操作,故本类不做 @MainActor 隔离;
+/// @Published 状态更新统一 hop 到主线程。
 final class CameraLayer: NSObject, ObservableObject {
     enum Error: Swift.Error {
         case cameraUnavailable
@@ -16,10 +18,10 @@ final class CameraLayer: NSObject, ObservableObject {
     private let session = AVCaptureSession()
     private let sessionQueue = DispatchQueue(label: "com.wear.camera.session")
     private let videoOutput = AVCaptureVideoDataOutput()
-    private var currentFrame: CVPixelBuffer?
+    nonisolated(unsafe) private var currentFrame: CVPixelBuffer?
 
-    /// 每帧回调(在主线程外,内部做好同步)
-    var onFrame: ((CVPixelBuffer) -> Void)?
+    /// 每帧回调(由相机捕获线程调用;内部做好同步)
+    nonisolated(unsafe) var onFrame: ((CVPixelBuffer) -> Void)?
 
     /// 请求相机权限
     func requestAccess() async -> Bool {

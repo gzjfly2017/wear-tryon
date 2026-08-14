@@ -40,6 +40,25 @@ struct FabricPreset: Codable, Equatable {
     static let all: [FabricPreset] = [.cotton, .linen, .silk, .denim, .knit, .wool]
 }
 
+/// CGRect 不遵守 Codable,提供自定义编码(存储四个 CGFloat)
+extension CGRect: Codable {
+    public init(from decoder: Decoder) throws {
+        var container = try decoder.unkeyedContainer()
+        let x = try container.decode(CGFloat.self)
+        let y = try container.decode(CGFloat.self)
+        let w = try container.decode(CGFloat.self)
+        let h = try container.decode(CGFloat.self)
+        self.init(x: x, y: y, width: w, height: h)
+    }
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.unkeyedContainer()
+        try container.encode(origin.x)
+        try container.encode(origin.y)
+        try container.encode(size.width)
+        try container.encode(size.height)
+    }
+}
+
 /// 版型模板:定义服装在人体上的 2D 贴合区域(归一化坐标,基于 MediaPipe 33 关键点)。
 /// 第一版用"关键点驱动的四边形区域"近似贴合,后续版本可替换为 3D 网格。
 struct GarmentTemplate: Codable, Identifiable {

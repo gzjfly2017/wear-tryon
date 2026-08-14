@@ -25,7 +25,7 @@ final class TryOnCoordinator: ObservableObject {
     private let frameSelector = FrameSelector()
 
     /// 增强引擎:优先 Mobile-VTON,失败则降级
-    private let vtonEngine: VTONEngineProtocol
+    private var vtonEngine: VTONEngineProtocol
     private let fallback = FallbackVTONEngine()
 
     private var isPerceptionLoaded = false
@@ -41,9 +41,9 @@ final class TryOnCoordinator: ObservableObject {
         let mobileEngine = MobileVTONEngine()
         do {
             try mobileEngine.load()
-            self.vtonEngine = mobileEngine
+            vtonEngine = mobileEngine
         } catch {
-            self.vtonEngine = fallback
+            vtonEngine = fallback
             statusMessage = "增强模型不可用,已启用预览模式: \(error.localizedDescription)"
         }
 
@@ -72,9 +72,11 @@ final class TryOnCoordinator: ObservableObject {
             statusMessage = "感知模型加载失败: \(error.localizedDescription)"
         }
 
-        // 3. 启动相机并挂接帧回调
+        // 3. 启动相机并挂接帧回调(相机线程 → 主线程 hop)
         camera.onFrame = { [weak self] pixelBuffer in
-            self?.handleFrame(pixelBuffer)
+            Task { @MainActor in
+                self?.handleFrame(pixelBuffer)
+            }
         }
         camera.start()
         isReady = true
@@ -85,7 +87,7 @@ final class TryOnCoordinator: ObservableObject {
         camera.stop()
     }
 
-    // MARK: - 帧处理(相机回调线程)
+    // MARK: - 帧处理(主线程)
 
     private func handleFrame(_ pixelBuffer: CVPixelBuffer) {
         timestampCounter += 1
@@ -95,14 +97,27 @@ final class TryOnCoordinator: ObservableObject {
         guard now - lastPerceptionTime >= perceptionInterval else { return }
         lastPerceptionTime = now
 
-        // 感知:分割 + 姿态(线程安全,内部串行)
-        guard isPerceptionLoaded,
-              let perception = perception.process(pixelBuffer: pixelBuffer) else {
-            return
+        // 感知推理较重,派发到后台队列(结果回主线程)
+        let perception = self.perception
+        let hasGarment = selectedGarment != nil
+        let selection = selectedGarment
+        Task.detached(priority: .userInitiated) { [weak self] in
+            guard let self,
+                  let result = perception.process(pixelBuffer: pixelBuffer) else { return }
+            await MainActor.run {
+                self.applyPerception(result, pixelBuffer: pixelBuffer,
+                                     hasGarment: hasGarment, selection: selection)
+            }
         }
+    }
 
+    /// 应用感知结果(主线程):帧选择器 + 合成预览
+    private func applyPerception(_ perception: BodyPerception,
+                                 pixelBuffer: CVPixelBuffer,
+                                 hasGarment: Bool,
+                                 selection: TryOnSelection?) {
         // 帧选择器:检测稳定姿态(仅当有服装选择时)
-        if selectedGarment != nil {
+        if hasGarment {
             let landmarks = perception.landmarks.map {
                 CGPoint(x: CGFloat($0.x), y: CGFloat($0.y))
             }
@@ -111,14 +126,11 @@ final class TryOnCoordinator: ObservableObject {
         }
 
         // 合成预览(有服装时叠加;无服装时显示原帧)
-        guard let selection = selectedGarment,
+        guard let selection,
               let garmentCG = UIImage(data: selection.garmentImageData)?.cgImage else {
-            // 无服装:把原帧转为 UIImage 供预览(降采样)
+            // 无服装:把原帧转为 UIImage 供预览
             if let cg = compositor.pixelBufferToCGImage(pixelBuffer) {
-                let ui = UIImage(cgImage: cg)
-                DispatchQueue.main.async { [weak self] in
-                    self?.previewImage = ui
-                }
+                previewImage = UIImage(cgImage: cg)
             }
             return
         }
@@ -135,10 +147,8 @@ final class TryOnCoordinator: ObservableObject {
 
         if let composed = compositor.composite(input) {
             let ui = UIImage(cgImage: composed)
-            DispatchQueue.main.async { [weak self] in
-                self?.previewImage = ui
-                self?.fallback.latestPreview = ui
-            }
+            previewImage = ui
+            fallback.latestPreview = ui
         }
     }
 
@@ -154,12 +164,14 @@ final class TryOnCoordinator: ObservableObject {
         let personImage = preview
         let garmentImage = UIImage(data: selection.garmentImageData) ?? preview
         let prompt = "Replace the upper body with \(selection.category.rawValue) garment"
+        // 捕获引擎引用,避免在 detached 任务中访问 MainActor 隔离状态
+        let engine = vtonEngine
 
         // 推理放到后台队列(避免阻塞 UI)
         Task.detached(priority: .userInitiated) { [weak self] in
             guard let self else { return }
             do {
-                let result = try self.vtonEngine.tryOn(
+                let result = try engine.tryOn(
                     personImage: personImage,
                     garmentImage: garmentImage,
                     prompt: prompt

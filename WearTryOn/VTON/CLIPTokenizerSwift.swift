@@ -93,7 +93,7 @@ enum CLIPTokenizerSwift {
     private static func normalize(_ text: String) -> String {
         // CLIP:NFKC + 小写 + 去除多余空白
         var s = text.lowercased()
-        s = s.applyingTransform(.init("Any-Hex/NFKC")!, reverse: false) ?? s
+        s = s.applyingTransform(StringTransform("Any-Hex/NFKC"), reverse: false) ?? s
         s = s.replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
         return s.trimmingCharacters(in: .whitespacesAndNewlines)
     }
