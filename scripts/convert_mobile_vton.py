@@ -67,7 +67,7 @@ def convert_to_coreml(torch_model, example_inputs, input_names_shapes, output_na
         compute_units=ct.ComputeUnit.ALL,
         convert_to="mlprogram",
     )
-    out_path = Path(out_dir) / name
+    out_path = Path(out_dir) / f"{name}.mlpackage"
     mlmodel.save(str(out_path))
     compile_coreml(out_path, out_dir)
     print(f"[ok] {name}")
