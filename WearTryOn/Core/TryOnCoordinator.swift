@@ -86,11 +86,10 @@ final class TryOnCoordinator: ObservableObject {
 
     private func handleFrame(_ pixelBuffer: CVPixelBuffer) {
         timestampCounter += 1
-        let ts = timestampCounter
 
         // 感知:分割 + 姿态(线程安全,内部串行)
         guard isPerceptionLoaded,
-              let perception = perception.process(pixelBuffer: pixelBuffer, timestamp: ts) else {
+              let perception = perception.process(pixelBuffer: pixelBuffer) else {
             return
         }
 
@@ -99,7 +98,7 @@ final class TryOnCoordinator: ObservableObject {
             let landmarks = perception.landmarks.map {
                 CGPoint(x: CGFloat($0.x), y: CGFloat($0.y))
             }
-            let timestamp = Double(ts) / 30.0
+            let timestamp = Double(timestampCounter) / 30.0
             frameSelector.update(landmarks: landmarks, timestamp: timestamp)
         }
 

@@ -14,7 +14,10 @@ struct BodyPerception {
 }
 
 /// MediaPipe 分割 + 姿态封装(实时预览层核心感知)
-/// 两个 task 独立运行,帧率由调用方节流。
+///
+/// 对齐官方 google-ai-edge/mediapipe-samples 的 API 用法:
+///   - Options 用无参构造 + baseOptions.modelAssetPath
+///   - 单帧同步推理使用 segment(image:) / detect(image:)
 final class BodyPerceptionEngine {
     enum Error: Swift.Error {
         case modelNotFound(String)
@@ -39,38 +42,55 @@ final class BodyPerceptionEngine {
         guard let modelPath = Bundle.main.path(forResource: "selfie_segmenter", ofType: "tflite") else {
             throw Error.modelNotFound("selfie_segmenter.tflite")
         }
-        let options = ImageSegmenterOptions(modelPath: modelPath)
+        let options = ImageSegmenterOptions()
         options.runningMode = .video
-        options.outputCategoryMask = true
-        options.outputConfidenceMasks = false
-        segmenter = try ImageSegmenter(options: options)
+        options.shouldOutputCategoryMask = true
+        options.shouldOutputConfidenceMasks = false
+        options.baseOptions.modelAssetPath = modelPath
+        do {
+            segmenter = try ImageSegmenter(options: options)
+        } catch {
+            throw Error.segmentationInitFailed
+        }
     }
 
     private func loadPoseLandmarker() throws {
         guard let modelPath = Bundle.main.path(forResource: "pose_landmarker_lite", ofType: "task") else {
             throw Error.modelNotFound("pose_landmarker_lite.task")
         }
-        let options = PoseLandmarkerOptions(modelPath: modelPath)
+        let options = PoseLandmarkerOptions()
         options.runningMode = .video
         options.numPoses = 1
         options.minPoseDetectionConfidence = 0.5
         options.minPosePresenceConfidence = 0.5
-        poseLandmarker = try PoseLandmarker(options: options)
+        options.minTrackingConfidence = 0.5
+        options.baseOptions.modelAssetPath = modelPath
+        do {
+            poseLandmarker = try PoseLandmarker(options: options)
+        } catch {
+            throw Error.poseInitFailed
+        }
     }
 
     // MARK: - 推理
 
-    /// 对单帧做分割 + 姿态。timestamp 必须单调递增(MediaPipe video 模式要求)。
-    func process(pixelBuffer: CVPixelBuffer, timestamp: Int) -> BodyPerception? {
+    /// 对单帧做分割 + 姿态(内部串行队列,帧率由调用方节流)。
+    func process(pixelBuffer: CVPixelBuffer) -> BodyPerception? {
         queue.sync {
-            guard let segmenter, let poseLandmarker else { return nil }
-            guard let image = MPImage(pixelBuffer: pixelBuffer) else { return nil }
+            guard let segmenter, let poseLandmarker,
+                  let image = try? MPImage(pixelBuffer: pixelBuffer) else {
+                return nil
+            }
 
-            let segmentationResult = try? segmenter.segment(videoFrame: image, timestampInMilliseconds: timestamp)
-            let maskImage: CGImage? = segmentationResult?.categoryMask?.image
+            let maskImage: CGImage? = {
+                guard let result = try? segmenter.segment(image: image) else { return nil }
+                return result.categoryMask?.image
+            }()
 
-            let poseResult = try? poseLandmarker.detect(videoFrame: image, timestampInMilliseconds: timestamp)
-            let landmarks = poseResult?.landmarks.first ?? []
+            let landmarks: [NormalizedLandmark] = {
+                guard let result = try? poseLandmarker.detect(image: image) else { return [] }
+                return result.landmarks.first ?? []
+            }()
 
             return BodyPerception(segmentationMask: maskImage, landmarks: landmarks)
         }
