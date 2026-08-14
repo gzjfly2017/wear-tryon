@@ -28,6 +28,10 @@ jobs:
         with:
           python-version: "3.11"
 
+      - name: Clone Mobile-VTON repo
+        run: |
+          git clone --depth 1 https://github.com/tmllab/2026_CVPR_Mobile-VTON.git Models/Mobile-VTON-repo
+
       - name: Install Python deps
         run: |
           python -m pip install --upgrade pip

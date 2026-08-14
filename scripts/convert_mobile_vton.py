@@ -152,6 +152,8 @@ def main() -> None:
 
     print("=== Converting VAE encoder ===")
     vae_enc = vae.encoder
+    latent_channels = getattr(vae.config, "latent_channels", 16)
+    print(f"  latent_channels = {latent_channels}")
     convert_to_coreml(
         vae_enc, (img,),
         [("image", [1, 3, res, res])],
@@ -159,63 +161,72 @@ def main() -> None:
     )
 
     print("=== Converting VAE decoder ===")
-    latent = torch.rand(1, 16, lat, lat)
+    latent = torch.rand(1, latent_channels, lat, lat)
     convert_to_coreml(
         vae_decoder, (latent,),
-        [("latent", [1, 16, lat, lat])],
+        [("latent", [1, latent_channels, lat, lat])],
         ["image"], "vae_decoder", out,
     )
 
     print("=== Converting denoiser_garment ===")
-    # 服装 UNet:输入服装潜在 + sigma + 文本嵌入
+    # 服装 UNet:输入服装潜在 + sigma + 文本嵌入;输出中间特征列表(供主 UNet 使用)
     glat = torch.rand(1, 16, lat, lat)
     sigma = torch.tensor([1.0])
     te_embeds = torch.rand(1, 77, 2048)
     try:
-        convert_to_coreml(
-            denoiser_garment, (glat, sigma, te_embeds),
-            [("latent", [1, 16, lat, lat]), ("sigma", [1]), ("text_embeds", [1, 77, 2048])],
-            ["output"], "denoiser_garment", out,
-        )
-    except Exception as e:
-        print(f"[warn] denoiser_garment direct conversion failed: {e}")
-        print("       Trying flexible-shape tracing with wrapper...")
-        # fallback: wrap with a module that reshapes as needed
         class GarmentWrapper(torch.nn.Module):
             def __init__(self, net):
                 super().__init__()
                 self.net = net
             def forward(self, latent, sigma, text_embeds):
-                return self.net(latent, sigma=sigma, encoder_hidden_states=text_embeds)
+                _, feats = self.net(sample=latent, timestep=sigma,
+                                    encoder_hidden_states=text_embeds, return_dict=False)
+                # 取第一个中间特征(与 pipeline 中 garment_features 的用法对齐;
+                # 完整特征列表见 pipeline,此处以主 UNet 接收的单特征简化)
+                if isinstance(feats, (tuple, list)):
+                    return feats[0]
+                return feats
         wrapper = GarmentWrapper(denoiser_garment)
         convert_to_coreml(
             wrapper, (glat, sigma, te_embeds),
             [("latent", [1, 16, lat, lat]), ("sigma", [1]), ("text_embeds", [1, 77, 2048])],
             ["output"], "denoiser_garment", out,
         )
+    except Exception as e:
+        print(f"[warn] denoiser_garment conversion failed: {e}")
+        import traceback; traceback.print_exc()
 
     print("=== Converting denoiser (try-on UNet) ===")
-    # 主 UNet:人物潜在 + 服装特征 + sigma + 文本嵌入
+    # 主 UNet:人物潜在 + 服装特征 + sigma + 文本嵌入 + image_embeds(added_cond)
     try:
         class TryonWrapper(torch.nn.Module):
             def __init__(self, net):
                 super().__init__()
                 self.net = net
-            def forward(self, latent, garment_feature, sigma, text_embeds):
-                return self.net(latent, garment_feature=garment_feature,
-                                sigma=sigma, encoder_hidden_states=text_embeds)
+            def forward(self, latent, garment_feature, sigma, text_embeds, image_embeds):
+                out = self.net(
+                    sample=latent,
+                    timestep=sigma,
+                    encoder_hidden_states=text_embeds,
+                    return_dict=False,
+                    garment_features=(garment_feature,),
+                    added_cond_kwargs={"image_embeds": image_embeds},
+                )
+                return out[0]
         wrapper = TryonWrapper(denoiser)
         # 服装特征形状需与模型定义一致,先从 config 读取
         gf_shape = getattr(denoiser.config, "garment_feature_shape", [1, 16, lat, lat])
         gfeat = torch.rand(*gf_shape)
+        img_embeds = torch.rand(1, 1024)  # DINOv2 输出维度,若不对会报错提示
         convert_to_coreml(
-            wrapper, (torch.rand(1, 16, lat, lat), gfeat, sigma, te_embeds),
+            wrapper, (torch.rand(1, 16, lat, lat), gfeat, sigma, te_embeds, img_embeds),
             [("latent", [1, 16, lat, lat]), ("garment_feature", gf_shape),
-             ("sigma", [1]), ("text_embeds", [1, 77, 2048])],
+             ("sigma", [1]), ("text_embeds", [1, 77, 2048]), ("image_embeds", [1, 1024])],
             ["velocity"], "denoiser", out,
         )
     except Exception as e:
         print(f"[fatal] denoiser conversion failed: {e}")
+        import traceback; traceback.print_exc()
         sys.exit(1)
 
     print(f"\nAll CoreML models written to {out.resolve()}")

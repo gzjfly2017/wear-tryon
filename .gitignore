@@ -9,6 +9,11 @@ dist/
 
 # 权重(大文件,由 CI 下载)
 Models/mobile-vton/checkpoint/
+Models/Mobile-VTON-repo/
+
+# Python
+__pycache__/
+*.pyc
 
 # CocoaPods
 Pods/
