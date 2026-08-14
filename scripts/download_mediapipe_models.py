@@ -1,25 +1,23 @@
 #!/usr/bin/env python3
 """Download MediaPipe model files for the iOS app bundle.
 
-Models (from Google AI Edge MediaPipe Tasks):
-  - selfie_segmenter.tflite     : real-time body segmentation
-  - pose_landmarker_lite.tflite : pose landmark detection
+Models (from Google AI Edge MediaPipe Tasks model zoo):
+  - selfie_segmenter.tflite       : real-time body segmentation
+  - pose_landmarker_lite.task     : pose landmark detection (Tasks format)
 
-The tflite files are copied into WearTryOn/Resources/Models at build time.
-We download them from the official google-ai-edge/mediapipe GitHub repo releases.
+Uses curl for reliable downloads on both Windows and macOS runners.
 
 Usage:
     python scripts/download_mediapipe_models.py [--out WearTryOn/Resources/Models]
 """
 import argparse
-import urllib.request
+import subprocess
+import sys
 from pathlib import Path
 
-# Official release URL pattern:
-# https://github.com/google-ai-edge/mediapipe/releases/download/v0.10.14/...
 MODELS = {
     "selfie_segmenter.tflite": "https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_segmenter/float16/latest/selfie_segmenter.tflite",
-    "pose_landmarker_lite.tflite": "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/latest/pose_landmarker_lite.tflite",
+    "pose_landmarker_lite.task": "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/latest/pose_landmarker_lite.task",
 }
 
 
@@ -29,15 +27,16 @@ def download(url: str, dest: Path) -> None:
         return
     print(f"  [get ] {url}")
     tmp = dest.with_suffix(dest.suffix + ".part")
-    req = urllib.request.Request(url, headers={"User-Agent": "wear-tryon/1.0"})
-    with urllib.request.urlopen(req, timeout=120) as resp, open(tmp, "wb") as fh:
-        while True:
-            chunk = resp.read(1 << 20)
-            if not chunk:
-                break
-            fh.write(chunk)
+    r = subprocess.run(
+        ["curl", "-sL", "--retry", "3", "--connect-timeout", "30",
+         "--max-time", "600", "-o", str(tmp), url],
+        check=False,
+    )
+    if r.returncode != 0 or not tmp.exists() or tmp.stat().st_size == 0:
+        print(f"  [fail] {dest.name}", file=sys.stderr)
+        sys.exit(1)
     tmp.rename(dest)
-    print(f"  [done] {dest.name} ({dest.stat().st_size / 1e6:.1f} MB)")
+    print(f"  [done] {dest.name} ({dest.stat().st_size / 1e6:.2f} MB)")
 
 
 def main() -> None:

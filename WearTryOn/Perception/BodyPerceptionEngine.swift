@@ -47,8 +47,8 @@ final class BodyPerceptionEngine {
     }
 
     private func loadPoseLandmarker() throws {
-        guard let modelPath = Bundle.main.path(forResource: "pose_landmarker_lite", ofType: "tflite") else {
-            throw Error.modelNotFound("pose_landmarker_lite.tflite")
+        guard let modelPath = Bundle.main.path(forResource: "pose_landmarker_lite", ofType: "task") else {
+            throw Error.modelNotFound("pose_landmarker_lite.task")
         }
         let options = PoseLandmarkerOptions(modelPath: modelPath)
         options.runningMode = .video

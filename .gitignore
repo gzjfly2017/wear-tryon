@@ -1,7 +1,8 @@
-# MediaPipe 模型(二进制)
-WearTryOn/Resources/Models/*.tflite
+# MediaPipe 模型(小文件,直接入库;mlmodelc 由 CI 生成)
 WearTryOn/Resources/Models/*.mlmodelc
 WearTryOn/Resources/Models/*.mlpackage
+!WearTryOn/Resources/Models/*.tflite
+!WearTryOn/Resources/Models/*.task
 
 # CoreML 转换产物
 build/

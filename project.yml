@@ -18,6 +18,11 @@ targets:
     platform: iOS
     sources:
       - path: WearTryOn
+        excludes:
+          - Resources/Models
+      - path: WearTryOn/Resources/Models
+        buildPhase: resources
+        type: folder
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.wear.tryon
