@@ -2,7 +2,6 @@ import Foundation
 import CoreML
 import CoreGraphics
 import UIKit
-import Accelerate
 
 /// VTON 增强引擎协议:输入人物帧 + 服装图,输出高清试穿图。
 /// 第一版实现为 Mobile-VTON 的 CoreML 管线(由 macOS CI 转换产出模型),
@@ -23,6 +22,7 @@ protocol VTONEngineProtocol {
 /// - vae.mlmodelc (编码器) / vae_decoder.mlmodelc (解码器)
 ///
 /// Swift 端负责:CLIP tokenizer、双编码器拼接、FlowMatch Euler 调度器、CFG、噪声。
+/// 张量工具函数在 MLTensorUtils.swift(独立文件,降低单文件复杂度)。
 final class MobileVTONEngine: VTONEngineProtocol {
 
     enum EngineError: Swift.Error, LocalizedError {
@@ -56,18 +56,22 @@ final class MobileVTONEngine: VTONEngineProtocol {
     private let numSteps: Int = 8
     private let guidanceScale: Float = 2.0
     private let schedulerShift: Float = 3.0
-    private let latentChannels: Int = 16
     private let textDim: Int = 4096          // 双 CLIP 拼接 + pad 后的特征维度
     private let t5Rows: Int = 256            // 零填充的 t5 行数(333 = 77 + 256)
     private let clipMaxLength = 77
+    private let promptRows: Int = 333        // 77 + 256
 
     // MARK: - 加载
 
     func load() throws {
         let bundle = Bundle.main
         func load(_ name: String) throws -> MLModel {
-            guard let url = bundle.url(forResource: name, withExtension: "mlmodelc")
-                    ?? bundle.url(forResource: name, withExtension: "mlmodel") else {
+            // 优先 Bundle 根,其次 Models/ 子目录(XcodeGen folder 资源)
+            let url = bundle.url(forResource: name, withExtension: "mlmodelc")
+                ?? bundle.url(forResource: name, withExtension: "mlmodel")
+                ?? bundle.url(forResource: name, withExtension: "mlmodelc", subdirectory: "Models")
+                ?? bundle.url(forResource: name, withExtension: "mlmodel", subdirectory: "Models")
+            guard let url else {
                 throw EngineError.modelNotFound(name)
             }
             do {
@@ -98,7 +102,7 @@ final class MobileVTONEngine: VTONEngineProtocol {
 
         // 2. 文本编码(双 CLIP -> [1,333,4096])
         let promptEmbeds = try encodePrompt(prompt)
-        // 服装描述用同一文本(第一版简化;与 inference.py 使用不同描述对齐后可优化)
+        // 服装描述用同一文本(第一版简化)
         let clothPromptEmbeds = promptEmbeds
 
         // 3. 服装编码(DINOv2)
@@ -131,7 +135,7 @@ final class MobileVTONEngine: VTONEngineProtocol {
         guard let resized = resize(cg, to: size) else {
             throw EngineError.inferenceFailed("图像缩放失败")
         }
-        return try rgbToTensor01(resized)  // [1,3,H,W] float32 [0,1]
+        return try rgbToTensor01(resized)
     }
 
     private func centeredSquare(of size: CGSize) -> CGRect {
@@ -177,7 +181,7 @@ final class MobileVTONEngine: VTONEngineProtocol {
 
     private func encodePrompt(_ prompt: String) throws -> MLMultiArray {
         let tokens = CLIPTokenizerSwift.encode(prompt, maxLength: clipMaxLength)
-        let ids = try intArrayToMLMultiArray(tokens, shape: [1, clipMaxLength])  // [1,77]
+        let ids = try MLTensorUtils.intArrayToMLMultiArray(tokens, shape: [1, clipMaxLength])
 
         guard let te1 = textEncoder, let te2 = textEncoder2 else {
             throw EngineError.pipelineIncomplete("text encoder 未加载")
@@ -192,20 +196,16 @@ final class MobileVTONEngine: VTONEngineProtocol {
             throw EngineError.inferenceFailed("文本编码输出缺失")
         }
 
-        // clip_embeds = cat([e1, e2], dim=-1)  [1,77,1536]
-        let clipEmbeds = try concat([e1, e2], axis: 2)
-        // pad 到 4096
-        let padded = try padWidth(clipEmbeds, width: textDim)
-        // 追加 256 个零行 -> [1,333,4096]
-        return try appendZeroRows(padded, rows: t5Rows)
+        // clip_embeds = cat([e1, e2], dim=-1) -> pad 到 4096 -> 追加 256 个零行
+        let clipEmbeds = try MLTensorUtils.concat([e1, e2], axis: 2)
+        let padded = try MLTensorUtils.padWidth(clipEmbeds, width: textDim)
+        return try MLTensorUtils.appendZeroRows(padded, rows: t5Rows)
     }
 
     // MARK: - 服装编码(DINOv2)
 
     private func encodeGarment(_ garmentTensor: MLMultiArray) throws -> MLMultiArray {
         guard let ie = imageEncoder else { throw EngineError.pipelineIncomplete("image encoder 未加载") }
-        // DINOv2 输入:518x518 0-1 张量;输出 hidden_states[-2] [1,1370,768],
-        // 由合并 denoiser 内部经 encoder_hid_proj(Resampler) 投影。
         let input = try MLDictionaryFeatureProvider(dictionary: [
             "image": MLFeatureValue(multiArray: garmentTensor)
         ])
@@ -269,7 +269,7 @@ final class MobileVTONEngine: VTONEngineProtocol {
             )
             let uncond = try denoiseStep(
                 personLatent: current, clothLatent: clothLatent,
-                sigma: sigma, promptEmbeds: emptyPromptEmbeds(),
+                sigma: sigma, promptEmbeds: MLTensorUtils.zeroEmbedding(rows: promptRows, dim: textDim),
                 clothPromptEmbeds: clothPromptEmbeds, garmentEmbeds: garmentEmbeds,
                 denoiser: denoiser
             )
@@ -305,24 +305,7 @@ final class MobileVTONEngine: VTONEngineProtocol {
         return velocity
     }
 
-    private func emptyPromptEmbeds() -> MLMultiArray {
-        let shape: [NSNumber] = [NSNumber(value: 1),
-                                 NSNumber(value: 77 + t5Rows),
-                                 NSNumber(value: textDim)]
-        return try! MLMultiArray(shape: shape, dataType: .float32)
-    }
-
-    // MARK: - 张量工具
-
-    /// 从 [Int32] 创建 MLMultiArray(形状 [1, n])
-    private func intArrayToMLMultiArray(_ values: [Int32], shape: [Int]) throws -> MLMultiArray {
-        let nsShape = shape.map { NSNumber(value: $0) }
-        let arr = try MLMultiArray(shape: nsShape, dataType: .int32)
-        for (i, v) in values.enumerated() {
-            arr[i] = NSNumber(value: v)
-        }
-        return arr
-    }
+    // MARK: - CFG / Euler / 噪声
 
     private func combineCFG(cond: MLMultiArray, uncond: MLMultiArray, scale: Float) throws -> MLMultiArray {
         let n = cond.count
@@ -377,54 +360,7 @@ final class MobileVTONEngine: VTONEngineProtocol {
         return sqrt(-2.0 * log(max(u1, 1e-12))) * cos(2.0 * Double.pi * u2)
     }
 
-    private func concat(_ arrays: [MLMultiArray], axis: Int) throws -> MLMultiArray {
-        // 仅支持最后一维拼接(axis == 2 for [1,77,d])
-        guard axis == 2, arrays.count == 2,
-              arrays[0].shape[0] == arrays[1].shape[0],
-              arrays[0].shape[1] == arrays[1].shape[1] else {
-            throw EngineError.inferenceFailed("concat 参数不支持")
-        }
-        let a = arrays[0], b = arrays[1]
-        let da = a.shape[2].intValue, db = b.shape[2].intValue
-        let rows = a.shape[1].intValue, batch = a.shape[0].intValue
-        let result = try MLMultiArray(shape: [NSNumber(value: batch), NSNumber(value: rows), NSNumber(value: da + db)],
-                                      dataType: .float32)
-        let ap = UnsafeMutablePointer<Float>(OpaquePointer(a.dataPointer))
-        let bp = UnsafeMutablePointer<Float>(OpaquePointer(b.dataPointer))
-        let rp = UnsafeMutablePointer<Float>(OpaquePointer(result.dataPointer))
-        for r in 0..<rows {
-            for c in 0..<da { rp[r * (da + db) + c] = ap[r * da + c] }
-            for c in 0..<db { rp[r * (da + db) + da + c] = bp[r * db + c] }
-        }
-        return result
-    }
-
-    private func padWidth(_ array: MLMultiArray, width: Int) throws -> MLMultiArray {
-        let d = array.shape[2].intValue
-        guard d <= width else { throw EngineError.inferenceFailed("pad 宽度不足") }
-        let rows = array.shape[1].intValue, batch = array.shape[0].intValue
-        let result = try MLMultiArray(shape: [NSNumber(value: batch), NSNumber(value: rows), NSNumber(value: width)],
-                                      dataType: .float32)
-        let ap = UnsafeMutablePointer<Float>(OpaquePointer(array.dataPointer))
-        let rp = UnsafeMutablePointer<Float>(OpaquePointer(result.dataPointer))
-        for r in 0..<rows {
-            for c in 0..<d { rp[r * width + c] = ap[r * d + c] }
-        }
-        return result
-    }
-
-    private func appendZeroRows(_ array: MLMultiArray, rows: Int) throws -> MLMultiArray {
-        let batch = array.shape[0].intValue
-        let curRows = array.shape[1].intValue
-        let width = array.shape[2].intValue
-        let result = try MLMultiArray(shape: [NSNumber(value: batch), NSNumber(value: curRows + rows), NSNumber(value: width)],
-                                      dataType: .float32)
-        let ap = UnsafeMutablePointer<Float>(OpaquePointer(array.dataPointer))
-        let rp = UnsafeMutablePointer<Float>(OpaquePointer(result.dataPointer))
-        let total = curRows * width
-        for i in 0..<total { rp[i] = ap[i] }
-        return result
-    }
+    // MARK: - 解码
 
     private func tensorToUIImage(_ tensor: MLMultiArray) throws -> UIImage {
         let shape = tensor.shape.map { $0.intValue }

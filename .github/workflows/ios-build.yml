@@ -146,7 +146,13 @@ jobs:
             build 2>&1 | tee /tmp/xcodebuild.log || true
           if grep -q "error:" /tmp/xcodebuild.log; then
             echo "::group::Compile errors"
-            grep -n "error:" /tmp/xcodebuild.log | head -40
+            grep -n "error:" /tmp/xcodebuild.log | head -60
+            echo "::endgroup::"
+            exit 1
+          fi
+          if grep -q "BUILD FAILED" /tmp/xcodebuild.log; then
+            echo "::group::Build tail (last 80 lines)"
+            tail -80 /tmp/xcodebuild.log
             echo "::endgroup::"
             exit 1
           fi

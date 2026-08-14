@@ -116,8 +116,15 @@ enum CLIPTokenizerSwift {
         defer { cacheLock.unlock() }
         if let cached = cache { return cached }
 
-        guard let vocabURL = Bundle.main.url(forResource: "vocab", withExtension: "json"),
-              let mergesURL = Bundle.main.url(forResource: "merges", withExtension: "txt"),
+        // 查找 vocab.json/merges.txt:优先 Bundle 根,其次 Models/ 子目录(XcodeGen folder 资源)
+        func findResource(_ name: String, _ ext: String) -> URL? {
+            if let url = Bundle.main.url(forResource: name, withExtension: ext) { return url }
+            if let url = Bundle.main.url(forResource: name, withExtension: ext, subdirectory: "Models") { return url }
+            return nil
+        }
+
+        guard let vocabURL = findResource("vocab", "json"),
+              let mergesURL = findResource("merges", "txt"),
               let vocabData = try? Data(contentsOf: vocabURL),
               let vocab = try? JSONSerialization.jsonObject(with: vocabData) as? [String: Int],
               let mergesText = try? String(contentsOf: mergesURL, encoding: .utf8) else {

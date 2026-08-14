@@ -39,7 +39,10 @@ final class BodyPerceptionEngine {
     }
 
     private func loadSegmenter() throws {
-        guard let modelPath = Bundle.main.path(forResource: "selfie_segmenter", ofType: "tflite") else {
+        // 优先 Bundle 根,其次 Models/ 子目录(XcodeGen folder 资源)
+        let modelPath = Bundle.main.path(forResource: "selfie_segmenter", ofType: "tflite")
+            ?? Bundle.main.path(forResource: "selfie_segmenter", ofType: "tflite", inDirectory: "Models")
+        guard let modelPath else {
             throw Error.modelNotFound("selfie_segmenter.tflite")
         }
         let options = ImageSegmenterOptions()
@@ -55,7 +58,9 @@ final class BodyPerceptionEngine {
     }
 
     private func loadPoseLandmarker() throws {
-        guard let modelPath = Bundle.main.path(forResource: "pose_landmarker_lite", ofType: "task") else {
+        let modelPath = Bundle.main.path(forResource: "pose_landmarker_lite", ofType: "task")
+            ?? Bundle.main.path(forResource: "pose_landmarker_lite", ofType: "task", inDirectory: "Models")
+        guard let modelPath else {
             throw Error.modelNotFound("pose_landmarker_lite.task")
         }
         let options = PoseLandmarkerOptions()
