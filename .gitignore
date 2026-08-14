@@ -1,0 +1,24 @@
+# MediaPipe 模型(二进制)
+WearTryOn/Resources/Models/*.tflite
+WearTryOn/Resources/Models/*.mlmodelc
+WearTryOn/Resources/Models/*.mlpackage
+
+# CoreML 转换产物
+build/
+dist/
+
+# 权重(大文件,由 CI 下载)
+Models/mobile-vton/checkpoint/
+
+# CocoaPods
+Pods/
+*.xcworkspace
+
+# Xcode
+DerivedData/
+*.xcodeproj
+xcuserdata/
+*.xcuserstate
+
+# 系统
+.DS_Store

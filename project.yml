@@ -1,0 +1,49 @@
+name: WearTryOn
+options:
+  bundleIdPrefix: com.wear
+  deploymentTarget:
+    iOS: "17.0"
+  createIntermediateGroups: true
+  generateEmptyDirectories: true
+settings:
+  base:
+    SWIFT_VERSION: "5.9"
+    IPHONEOS_DEPLOYMENT_TARGET: "17.0"
+    TARGETED_DEVICE_FAMILY: "1,2"
+    ENABLE_USER_SCRIPT_SANDBOXING: "NO"
+    CODE_SIGN_STYLE: Automatic
+    CODE_SIGNING_ALLOWED: "NO"   # CI 无签名构建(模拟器),真机调试时由 Xcode 覆盖
+targets:
+  WearTryOn:
+    type: application
+    platform: iOS
+    sources:
+      - path: WearTryOn
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.wear.tryon
+        INFOPLIST_FILE: WearTryOn/Info.plist
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ENABLE_PREVIEWS: "YES"
+        GENERATE_INFOPLIST_FILE: "NO"
+        MARKETING_VERSION: "1.0.0"
+        CURRENT_PROJECT_VERSION: "1"
+        # Metal shader 编译
+        METAL_LIBRARY_FILE: default.metallib
+    dependencies:
+      - sdk: Metal.framework
+      - sdk: AVFoundation.framework
+      - sdk: CoreMedia.framework
+      - sdk: CoreVideo.framework
+      - sdk: Accelerate.framework
+      - sdk: CoreML.framework
+      - sdk: Vision.framework
+      - sdk: Photos.framework
+      - sdk: UIKit.framework
+  WearTryOnTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: WearTryOnTests
+    dependencies:
+      - target: WearTryOn
