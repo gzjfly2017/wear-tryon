@@ -46,6 +46,13 @@ jobs:
         run: |
           python scripts/download_weights.py --out Models/mobile-vton
 
+      - name: Verify pipeline (PyTorch sanity)
+        run: |
+          python scripts/verify_pipeline.py \
+            --checkpoint Models/mobile-vton/checkpoint \
+            --repo Models/Mobile-VTON-repo \
+            --resolution 512
+
       - name: Convert to CoreML
         run: |
           python scripts/convert_mobile_vton.py \
