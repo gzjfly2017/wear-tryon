@@ -30,6 +30,9 @@ final class TryOnCoordinator: ObservableObject {
 
     private var isPerceptionLoaded = false
     private var timestampCounter = 0
+    private var lastPerceptionTime: CFTimeInterval = 0
+    /// 感知帧率控制:MediaPipe 同步推理较重,限制在 15fps 左右
+    private let perceptionInterval: CFTimeInterval = 1.0 / 15.0
 
     // MARK: - 初始化
 
@@ -86,6 +89,11 @@ final class TryOnCoordinator: ObservableObject {
 
     private func handleFrame(_ pixelBuffer: CVPixelBuffer) {
         timestampCounter += 1
+
+        // 感知节流:同步双模型推理较重,按 interval 采样
+        let now = CACurrentMediaTime()
+        guard now - lastPerceptionTime >= perceptionInterval else { return }
+        lastPerceptionTime = now
 
         // 感知:分割 + 姿态(线程安全,内部串行)
         guard isPerceptionLoaded,
