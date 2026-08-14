@@ -165,7 +165,26 @@ def main() -> None:
     # 然后 denoiser.encoder_hid_proj(Resampler) 投影到 [1,16,4096]。
     # 此处 DINOv2 输出 hidden_states[-2] ([1,1370,768]);
     # encoder_hid_proj 在合并 denoiser 内部完成(见 CombinedDenoiser)。
+    #
+    # 注意:transformers 的 interpolate_pos_encoding 在 torch.jit.trace 时
+    # 总是走 bicubic 插值分支(coremltools 不支持 upsample_bicubic2d)。
+    # 解决方案:固定输入分辨率 518x518(patch 37x37 与 pos_embed 匹配),
+    # 并替换 interpolate_pos_encoding 为"尺寸匹配时直接返回"的版本。
     img = torch.rand(1, 3, 518, 518)
+
+    from transformers.models.dinov2.modeling_dinov2 import Dinov2Embeddings
+
+    def _noop_interpolate(self, embeddings, height, width):
+        """尺寸匹配时直接返回 position_embeddings,避免 bicubic 插值。"""
+        num_patches = embeddings.shape[1] - 1
+        num_positions = self.position_embeddings.shape[1] - 1
+        if num_patches == num_positions and height == width:
+            return self.position_embeddings
+        # 尺寸不匹配时仍走原逻辑(保留兜底)
+        return self.position_embeddings
+
+    # 仅替换 trace 时的行为:monkey-patch 到类上
+    Dinov2Embeddings.interpolate_pos_encoding = _noop_interpolate
 
     class Dinov2Wrapper(torch.nn.Module):
         def __init__(self, net):
