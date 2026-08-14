@@ -42,7 +42,7 @@ struct FabricPreset: Codable, Equatable {
 
 /// CGRect 不遵守 Codable,提供自定义编码(存储四个 CGFloat)
 extension CGRect: Codable {
-    public init(from decoder: Decoder) throws {
+    init(from decoder: Decoder) throws {
         var container = try decoder.unkeyedContainer()
         let x = try container.decode(CGFloat.self)
         let y = try container.decode(CGFloat.self)
@@ -50,7 +50,7 @@ extension CGRect: Codable {
         let h = try container.decode(CGFloat.self)
         self.init(x: x, y: y, width: w, height: h)
     }
-    public func encode(to encoder: Encoder) throws {
+    func encode(to encoder: Encoder) throws {
         var container = encoder.unkeyedContainer()
         try container.encode(origin.x)
         try container.encode(origin.y)
