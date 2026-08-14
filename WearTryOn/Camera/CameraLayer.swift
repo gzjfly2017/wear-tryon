@@ -18,10 +18,11 @@ final class CameraLayer: NSObject, ObservableObject {
     private let session = AVCaptureSession()
     private let sessionQueue = DispatchQueue(label: "com.wear.camera.session")
     private let videoOutput = AVCaptureVideoDataOutput()
-    nonisolated(unsafe) private var currentFrame: CVPixelBuffer?
+    /// 帧数据(相机线程写入/读取;Swift 5.9 无 nonisolated(unsafe),用注释说明)
+    private var currentFrame: CVPixelBuffer?
 
-    /// 每帧回调(由相机捕获线程调用;内部做好同步)
-    nonisolated(unsafe) var onFrame: ((CVPixelBuffer) -> Void)?
+    /// 每帧回调(由相机捕获线程调用)
+    var onFrame: ((CVPixelBuffer) -> Void)?
 
     /// 请求相机权限
     func requestAccess() async -> Bool {
