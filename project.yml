@@ -12,7 +12,6 @@ settings:
     TARGETED_DEVICE_FAMILY: "1,2"
     ENABLE_USER_SCRIPT_SANDBOXING: "NO"
     CODE_SIGN_STYLE: Automatic
-    CODE_SIGNING_ALLOWED: "NO"   # CI 无签名构建(模拟器),真机调试时由 Xcode 覆盖
 targets:
   WearTryOn:
     type: application
@@ -28,8 +27,7 @@ targets:
         GENERATE_INFOPLIST_FILE: "NO"
         MARKETING_VERSION: "1.0.0"
         CURRENT_PROJECT_VERSION: "1"
-        # Metal shader 编译
-        METAL_LIBRARY_FILE: default.metallib
+        CODE_SIGNING_ALLOWED: "NO"   # CI 无签名构建(模拟器),真机调试时由 Xcode 覆盖
     dependencies:
       - sdk: Metal.framework
       - sdk: AVFoundation.framework

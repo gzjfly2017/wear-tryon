@@ -52,13 +52,22 @@ jobs:
             --checkpoint Models/mobile-vton/checkpoint \
             --repo Models/Mobile-VTON-repo \
             --out build/coreml || echo "::warning::CoreML conversion failed; app will run in preview-only fallback mode"
+          # tokenizer 资源随模型一并产出(供 Swift CLIPTokenizerSwift 使用)
+          mkdir -p build/coreml/tokenizer
+          if [ -f Models/mobile-vton/checkpoint/tokenizer/vocab.json ]; then
+            cp Models/mobile-vton/checkpoint/tokenizer/vocab.json build/coreml/tokenizer/
+            cp Models/mobile-vton/checkpoint/tokenizer/merges.txt build/coreml/tokenizer/
+          fi
+          ls -la build/coreml/ || true
 
       - name: Upload CoreML models as artifact
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: coreml-models
-          path: build/coreml/*.mlmodelc
+          path: |
+            build/coreml/*.mlmodelc
+            build/coreml/tokenizer/
           retention-days: 7
           if-no-files-found: warn
 
@@ -93,10 +102,10 @@ jobs:
 
       - name: Copy tokenizer assets
         run: |
-          mkdir -p WearTryOn/Resources/Models
-          if [ -f Models/mobile-vton/checkpoint/tokenizer/vocab.json ]; then
-            cp Models/mobile-vton/checkpoint/tokenizer/vocab.json WearTryOn/Resources/Models/vocab.json
-            cp Models/mobile-vton/checkpoint/tokenizer/merges.txt WearTryOn/Resources/Models/merges.txt
+          mkdir -p WearTryOn/Resources/Models/tokenizer
+          if [ -d WearTryOn/Resources/Models/tokenizer ] && [ -f WearTryOn/Resources/Models/tokenizer/vocab.json ]; then
+            cp WearTryOn/Resources/Models/tokenizer/vocab.json WearTryOn/Resources/Models/
+            cp WearTryOn/Resources/Models/tokenizer/merges.txt WearTryOn/Resources/Models/
           fi
           ls -la WearTryOn/Resources/Models/ || true
 

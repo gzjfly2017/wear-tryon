@@ -38,7 +38,7 @@ final class FrameSelector {
         guard timestamp - lastTriggerTime >= cooldown else { return }
         lastTriggerTime = timestamp
 
-        let best = window.max(by: { $0.score < $1.score }) ?? window[window.startIndex]
+        let best = window.max(by: { $0.score < $1.score }) ?? history[history.count - 1]
         onStableFrame?(best)
     }
 
