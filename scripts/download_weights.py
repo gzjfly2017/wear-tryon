@@ -9,12 +9,15 @@ Usage:
 """
 import argparse
 import json
+import os
 import subprocess
 import sys
 import urllib.request
 from pathlib import Path
 
-MIRROR = "https://hf-mirror.com"
+# 默认走官方 HuggingFace(CI/GitHub runner 环境)。
+# 本地 CN 网络可用 --mirror https://hf-mirror.com 或设置 HF_ENDPOINT 环境变量。
+DEFAULT_MIRROR = os.environ.get("HF_ENDPOINT", "https://huggingface.co")
 REPO = "FlashStight/Mobile-VTON"
 
 
@@ -45,7 +48,7 @@ def download(url: str, dest: Path) -> None:
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", default="Models/mobile-vton")
-    ap.add_argument("--mirror", default=MIRROR)
+    ap.add_argument("--mirror", default=DEFAULT_MIRROR)
     args = ap.parse_args()
 
     out = Path(args.out)

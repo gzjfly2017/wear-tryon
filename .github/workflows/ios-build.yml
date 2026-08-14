@@ -44,7 +44,7 @@ jobs:
         env:
           HF_ENDPOINT: ${{ secrets.HF_ENDPOINT }}
         run: |
-          python scripts/download_weights.py --out Models/mobile-vton
+          python scripts/download_weights.py --out Models/mobile-vton --mirror "https://huggingface.co"
 
       - name: Verify pipeline (PyTorch sanity)
         run: |
@@ -55,10 +55,15 @@ jobs:
 
       - name: Convert to CoreML
         run: |
+          set -o pipefail
           python scripts/convert_mobile_vton.py \
             --checkpoint Models/mobile-vton/checkpoint \
             --repo Models/Mobile-VTON-repo \
-            --out build/coreml || echo "::warning::CoreML conversion failed; app will run in preview-only fallback mode"
+            --out build/coreml 2>&1 | tee /tmp/convert.log && CONVERT_OK=1 || CONVERT_OK=0
+          if [ "$CONVERT_OK" != "1" ]; then
+            echo "::error::CoreML conversion failed (app will use preview-only fallback). Last 60 lines:"
+            tail -60 /tmp/convert.log
+          fi
           # tokenizer 资源随模型一并产出(供 Swift CLIPTokenizerSwift 使用)
           mkdir -p build/coreml/tokenizer
           if [ -f Models/mobile-vton/checkpoint/tokenizer/vocab.json ]; then
@@ -66,6 +71,7 @@ jobs:
             cp Models/mobile-vton/checkpoint/tokenizer/merges.txt build/coreml/tokenizer/
           fi
           ls -la build/coreml/ || true
+          exit 0
 
       - name: Upload CoreML models as artifact
         if: always()
