@@ -51,14 +51,16 @@ jobs:
           python scripts/convert_mobile_vton.py \
             --checkpoint Models/mobile-vton/checkpoint \
             --repo Models/Mobile-VTON-repo \
-            --out build/coreml
+            --out build/coreml || echo "::warning::CoreML conversion failed; app will run in preview-only fallback mode"
 
       - name: Upload CoreML models as artifact
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: coreml-models
           path: build/coreml/*.mlmodelc
           retention-days: 7
+          if-no-files-found: warn
 
   # ------------------------------------------------------------------
   # Job 2: iOS App 构建(模拟器,无签名)
@@ -87,11 +89,16 @@ jobs:
         with:
           name: coreml-models
           path: WearTryOn/Resources/Models/
+        continue-on-error: true
 
       - name: Copy tokenizer assets
         run: |
-          cp Models/mobile-vton/checkpoint/tokenizer/vocab.json WearTryOn/Resources/Models/vocab.json
-          cp Models/mobile-vton/checkpoint/tokenizer/merges.txt WearTryOn/Resources/Models/merges.txt
+          mkdir -p WearTryOn/Resources/Models
+          if [ -f Models/mobile-vton/checkpoint/tokenizer/vocab.json ]; then
+            cp Models/mobile-vton/checkpoint/tokenizer/vocab.json WearTryOn/Resources/Models/vocab.json
+            cp Models/mobile-vton/checkpoint/tokenizer/merges.txt WearTryOn/Resources/Models/merges.txt
+          fi
+          ls -la WearTryOn/Resources/Models/ || true
 
       - name: Generate Xcode project
         run: xcodegen generate

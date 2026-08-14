@@ -17,14 +17,12 @@ protocol VTONEngineProtocol {
 /// Mobile-VTON CoreML 引擎。
 ///
 /// Pipeline 组件(全部由 scripts/convert_mobile_vton.py 转换产出):
-/// - text_encoder.mlmodelc / text_encoder_2.mlmodelc (CLIP)
+/// - text_encoder.mlmodelc / text_encoder_2.mlmodelc (CLIP,输出 hidden_states[-2])
 /// - image_encoder.mlmodelc (DINOv2 服装编码)
-/// - denoiser.mlmodelc (主去噪 UNet)
-/// - denoiser_garment.mlmodelc (服装去噪 UNet)
-/// - vae.mlmodelc (编码器)
-/// - vae_decoder.mlmodelc (解码器)
+/// - denoiser.mlmodelc (合并去噪:garment UNet + try-on UNet)
+/// - vae.mlmodelc (编码器) / vae_decoder.mlmodelc (解码器)
 ///
-/// 调度器(FlowMatchEulerDiscreteScheduler)在 Swift 端实现。
+/// Swift 端负责:CLIP tokenizer、双编码器拼接、FlowMatch Euler 调度器、CFG、噪声。
 final class MobileVTONEngine: VTONEngineProtocol {
 
     enum EngineError: Swift.Error, LocalizedError {
@@ -45,22 +43,23 @@ final class MobileVTONEngine: VTONEngineProtocol {
 
     private(set) var isReady = false
 
-    // CoreML 模型(全部运行在 ANE/GPU,CPU 兜底)
+    // CoreML 模型
     private var textEncoder: MLModel?
     private var textEncoder2: MLModel?
     private var imageEncoder: MLModel?
     private var denoiser: MLModel?
-    private var denoiserGarment: MLModel?
     private var vae: MLModel?
     private var vaeDecoder: MLModel?
 
-    // 配置
-    private let resolution: Int = 512          // 生成分辨率(高端机可尝试 768)
-    private let numSteps: Int = 8              // FlowMatch 采样步数(蒸馏后)
-    private let guidanceScale: Float = 2.0     // CFG 引导系数
-    private let schedulerShift: Float = 3.0    // FlowMatch shift
-    private let latentChannels: Int = 16       // SD3.5 VAE 潜在通道
-    private let latentScale: Float = 16.0      // VAE 压缩比(8x8 空间)
+    // 配置(与 pipeline / 转换脚本一致)
+    private let resolution: Int = 512
+    private let numSteps: Int = 8
+    private let guidanceScale: Float = 2.0
+    private let schedulerShift: Float = 3.0
+    private let latentChannels: Int = 16
+    private let textDim: Int = 4096          // 双 CLIP 拼接 + pad 后的特征维度
+    private let t5Rows: Int = 256            // 零填充的 t5 行数(333 = 77 + 256)
+    private let clipMaxLength = 77
 
     // MARK: - 加载
 
@@ -82,7 +81,6 @@ final class MobileVTONEngine: VTONEngineProtocol {
         textEncoder2 = try load("text_encoder_2")
         imageEncoder = try load("image_encoder")
         denoiser = try load("denoiser")
-        denoiserGarment = try load("denoiser_garment")
         vae = try load("vae")
         vaeDecoder = try load("vae_decoder")
 
@@ -94,32 +92,36 @@ final class MobileVTONEngine: VTONEngineProtocol {
     func tryOn(personImage: UIImage, garmentImage: UIImage, prompt: String) throws -> UIImage {
         guard isReady else { throw EngineError.pipelineIncomplete("模型未加载") }
 
-        // 1. 预处理:缩放/归一化到 [-1, 1]
+        // 1. 预处理(人物/服装图 -> 0-1 张量)
         let personTensor = try preprocess(personImage)
         let garmentTensor = try preprocess(garmentImage)
 
-        // 2. 文本编码(双 CLIP)
-        let promptEmbeds = try encodeText(prompt)
+        // 2. 文本编码(双 CLIP -> [1,333,4096])
+        let promptEmbeds = try encodePrompt(prompt)
+        // 服装描述用同一文本(第一版简化;与 inference.py 使用不同描述对齐后可优化)
+        let clothPromptEmbeds = promptEmbeds
 
         // 3. 服装编码(DINOv2)
         let garmentEmbeds = try encodeGarment(garmentTensor)
 
-        // 4. VAE 编码人物帧
-        let latents = try encodeVAE(personTensor)
+        // 4. VAE 编码(人物/服装 -> 潜在)
+        let personLatent = try encodeVAE(personTensor)
+        let clothLatent = try encodeVAE(garmentTensor)
 
-        // 5. FlowMatch 去噪循环
+        // 5. FlowMatch 去噪
         let denoised = try denoiseLoop(
-            latents: latents,
+            personLatent: personLatent,
+            clothLatent: clothLatent,
             promptEmbeds: promptEmbeds,
+            clothPromptEmbeds: clothPromptEmbeds,
             garmentEmbeds: garmentEmbeds
         )
 
-        // 6. VAE 解码 → 图像
-        let output = try decodeVAE(denoised)
-        return output
+        // 6. VAE 解码
+        return try decodeVAE(denoised)
     }
 
-    // MARK: - Pipeline 步骤
+    // MARK: - 预处理
 
     private func preprocess(_ image: UIImage) throws -> MLMultiArray {
         guard let cg = image.cgImage?.cropping(to: centeredSquare(of: image.size)) ?? image.cgImage else {
@@ -129,7 +131,7 @@ final class MobileVTONEngine: VTONEngineProtocol {
         guard let resized = resize(cg, to: size) else {
             throw EngineError.inferenceFailed("图像缩放失败")
         }
-        return try rgbToTensor(resized)  // [1,3,H,W] float32 [-1,1]
+        return try rgbToTensor01(resized)  // [1,3,H,W] float32 [0,1]
     }
 
     private func centeredSquare(of size: CGSize) -> CGRect {
@@ -150,12 +152,11 @@ final class MobileVTONEngine: VTONEngineProtocol {
         return ctx.makeImage()
     }
 
-    private func rgbToTensor(_ image: CGImage) throws -> MLMultiArray {
+    private func rgbToTensor01(_ image: CGImage) throws -> MLMultiArray {
         let w = image.width, h = image.height
         guard let data = CFDataGetBytePtr(image.dataProvider?.data) else {
             throw EngineError.inferenceFailed("图像数据读取失败")
         }
-        // 注意:CGImage 为 BGRA/RGBA 顺序不定,这里假设 RGBA;生产代码需按 bitmapInfo 处理
         let shape = [1, 3, NSNumber(value: h), NSNumber(value: w)]
         let arr = try MLMultiArray(shape: shape, dataType: .float32)
         let ptr = UnsafeMutablePointer<Float>(OpaquePointer(arr.dataPointer))
@@ -163,97 +164,106 @@ final class MobileVTONEngine: VTONEngineProtocol {
         for y in 0..<h {
             for x in 0..<w {
                 let offset = y * bytesPerRow + x * 4
-                let r = Float(data[offset]) / 255.0 * 2.0 - 1.0
-                let g = Float(data[offset + 1]) / 255.0 * 2.0 - 1.0
-                let b = Float(data[offset + 2]) / 255.0 * 2.0 - 1.0
-                ptr[y * w + x] = r
-                ptr[w * h + y * w + x] = g
-                ptr[2 * w * h + y * w + x] = b
+                ptr[y * w + x] = Float(data[offset]) / 255.0
+                ptr[w * h + y * w + x] = Float(data[offset + 1]) / 255.0
+                ptr[2 * w * h + y * w + x] = Float(data[offset + 2]) / 255.0
             }
         }
         return arr
     }
 
-    private func encodeText(_ prompt: String) throws -> [String: MLMultiArray] {
-        // 简化:双 CLIP 编码。生产中 tokenizer 在 Swift 端实现(或使用 MLTextEncoder 包装)。
-        // 第一版:CLIP tokenizer 由转换脚本固化词汇表,Swift 端实现分词。
-        let tokens = CLIPTokenizerSwift.encode(prompt, maxLength: 77)
-        guard let te = textEncoder, let te2 = textEncoder2 else {
+    // MARK: - 文本编码(双 CLIP 拼接,对齐 pipeline)
+
+    private func encodePrompt(_ prompt: String) throws -> MLMultiArray {
+        let tokens = CLIPTokenizerSwift.encode(prompt, maxLength: clipMaxLength)
+        let ids = try intArrayToMLMultiArray(tokens, shape: [1, clipMaxLength])  // [1,77]
+
+        guard let te1 = textEncoder, let te2 = textEncoder2 else {
             throw EngineError.pipelineIncomplete("text encoder 未加载")
         }
-        let input = try MLDictionaryFeatureProvider(dictionary: [
-            "input_ids": MLMultiArray(tokens)  // [1,77] int32
-        ])
-        let out1 = try te.prediction(from: input)
+        let input = try MLDictionaryFeatureProvider(dictionary: ["input_ids": ids])
+        let out1 = try te1.prediction(from: input)
         let out2 = try te2.prediction(from: input)
-        guard let e1 = out1.featureValue(for: "text_embeds")?.multiArrayValue,
-              let e2 = out2.featureValue(for: "text_embeds")?.multiArrayValue else {
+        guard let e1 = out1.featureValue(for: "hidden_states")?.multiArrayValue,
+              let e2 = out2.featureValue(for: "hidden_states")?.multiArrayValue else {
             throw EngineError.inferenceFailed("文本编码输出缺失")
         }
-        return ["text_encoder": e1, "text_encoder_2": e2]
+
+        // clip_embeds = cat([e1, e2], dim=-1)  [1,77,1536]
+        let clipEmbeds = try concat([e1, e2], axis: 2)
+        // pad 到 4096
+        let padded = try padWidth(clipEmbeds, width: textDim)
+        // 追加 256 个零行 -> [1,333,4096]
+        return try appendZeroRows(padded, rows: t5Rows)
     }
+
+    // MARK: - 服装编码(DINOv2)
 
     private func encodeGarment(_ garmentTensor: MLMultiArray) throws -> MLMultiArray {
         guard let ie = imageEncoder else { throw EngineError.pipelineIncomplete("image encoder 未加载") }
+        // DINOv2 输入:518x518 + ImageNet 归一化(转换脚本接受 0-1 输入;归一化若在模型内则直接传入)
         let input = try MLDictionaryFeatureProvider(dictionary: ["image": garmentTensor])
         let out = try ie.prediction(from: input)
-        guard let embeds = out.featureValue(for: "image_embeds")?.multiArrayValue ?? 
-            out.featureValue(for: "embeds")?.multiArrayValue else {
+        guard let embeds = out.featureValue(for: "image_embeds")?.multiArrayValue else {
             throw EngineError.inferenceFailed("服装编码输出缺失")
         }
         return embeds
     }
 
+    // MARK: - VAE
+
     private func encodeVAE(_ tensor: MLMultiArray) throws -> MLMultiArray {
         guard let vae else { throw EngineError.pipelineIncomplete("vae 未加载") }
         let input = try MLDictionaryFeatureProvider(dictionary: ["image": tensor])
         let out = try vae.prediction(from: input)
-        guard let latent = out.featureValue(for: "latent")?.multiArrayValue
-            ?? out.featureValue(for: "posterior")?.multiArrayValue else {
+        guard let latent = out.featureValue(for: "latent")?.multiArrayValue else {
             throw EngineError.inferenceFailed("VAE 编码输出缺失")
         }
         return latent
     }
 
-    private func denoiseLoop(latents: MLMultiArray,
-                             promptEmbeds: [String: MLMultiArray],
-                             garmentEmbeds: MLMultiArray) throws -> MLMultiArray {
-        guard let denoiser, let denoiserGarment else {
-            throw EngineError.pipelineIncomplete("denoiser 未加载")
+    private func decodeVAE(_ latents: MLMultiArray) throws -> UIImage {
+        guard let vaeDecoder else { throw EngineError.pipelineIncomplete("vae_decoder 未加载") }
+        let input = try MLDictionaryFeatureProvider(dictionary: ["latent": latents])
+        let out = try vaeDecoder.prediction(from: input)
+        guard let image = out.featureValue(for: "image")?.multiArrayValue else {
+            throw EngineError.inferenceFailed("VAE 解码输出缺失")
         }
+        return try tensorToUIImage(image)
+    }
+
+    // MARK: - 去噪循环(FlowMatch Euler + CFG)
+
+    private func denoiseLoop(personLatent: MLMultiArray,
+                             clothLatent: MLMultiArray,
+                             promptEmbeds: MLMultiArray,
+                             clothPromptEmbeds: MLMultiArray,
+                             garmentEmbeds: MLMultiArray) throws -> MLMultiArray {
+        guard let denoiser else { throw EngineError.pipelineIncomplete("denoiser 未加载") }
 
         let scheduler = FlowMatchEulerScheduler(
-            numSteps: numSteps,
-            shift: schedulerShift,
-            sigmaMin: 0.06,
-            sigmaMax: 5.0
+            numSteps: numSteps, shift: schedulerShift, sigmaMin: 0.06, sigmaMax: 5.0
         )
         let sigmas = scheduler.timesteps
 
-        // 噪声:第一版用固定种子,保证可复现
-        var current = try addNoise(to: latents, sigma: sigmas[0])
+        var current = try addNoise(to: personLatent, sigma: sigmas[0])
 
         for step in 0..<numSteps {
             let sigma = sigmas[step]
 
-            // CFG:有条件 + 无条件(空文本)两次前向
             let cond = try denoiseStep(
-                latents: current, sigma: sigma,
-                promptEmbeds: promptEmbeds, garmentEmbeds: garmentEmbeds,
-                denoiser: denoiser, denoiserGarment: denoiserGarment,
-                isConditional: true
+                personLatent: current, clothLatent: clothLatent,
+                sigma: sigma, promptEmbeds: promptEmbeds,
+                clothPromptEmbeds: clothPromptEmbeds, garmentEmbeds: garmentEmbeds,
+                denoiser: denoiser
             )
             let uncond = try denoiseStep(
-                latents: current, sigma: sigma,
-                promptEmbeds: [:], garmentEmbeds: garmentEmbeds,
-                denoiser: denoiser, denoiserGarment: denoiserGarment,
-                isConditional: false
+                personLatent: current, clothLatent: clothLatent,
+                sigma: sigma, promptEmbeds: emptyPromptEmbeds(),
+                clothPromptEmbeds: clothPromptEmbeds, garmentEmbeds: garmentEmbeds,
+                denoiser: denoiser
             )
-
-            // classifier-free guidance 组合
             let guided = try combineCFG(cond: cond, uncond: uncond, scale: guidanceScale)
-
-            // Euler 步进
             let nextSigma = step + 1 < numSteps ? sigmas[step + 1] : 0.0
             current = try eulerStep(latents: current, velocity: guided,
                                     sigma: sigma, nextSigma: nextSigma)
@@ -261,44 +271,45 @@ final class MobileVTONEngine: VTONEngineProtocol {
         return current
     }
 
-    private func denoiseStep(latents: MLMultiArray,
+    private func denoiseStep(personLatent: MLMultiArray,
+                             clothLatent: MLMultiArray,
                              sigma: Float,
-                             promptEmbeds: [String: MLMultiArray],
+                             promptEmbeds: MLMultiArray,
+                             clothPromptEmbeds: MLMultiArray,
                              garmentEmbeds: MLMultiArray,
-                             denoiser: MLModel,
-                             denoiserGarment: MLModel,
-                             isConditional: Bool) throws -> MLMultiArray {
-        // 1. 服装去噪网络(garment denoiser):提取服装特征
-        let garmentInput = try MLDictionaryFeatureProvider(dictionary: [
-            "latent": garmentEmbeds,
-            "sigma": MLMultiArray(shape: [1], dataType: .float32, initialValue: isConditional ? sigma : 0.0),
-            "text_embeds": promptEmbeds["text_encoder"] ?? emptyTextEmbeds(),
+                             denoiser: MLModel) throws -> MLMultiArray {
+        let sigmaArr = try MLMultiArray(shape: [1], dataType: .float32)
+        sigmaArr[0] = NSNumber(value: sigma)
+        let input = try MLDictionaryFeatureProvider(dictionary: [
+            "person_latent": personLatent,
+            "cloth_latent": clothLatent,
+            "sigma": sigmaArr,
+            "text_embeds": promptEmbeds,
+            "cloth_text_embeds": clothPromptEmbeds,
+            "image_embeds": garmentEmbeds,
         ])
-        let garmentOut = try denoiserGarment.prediction(from: garmentInput)
-        guard let garmentFeat = garmentOut.featureValue(for: "output")?.multiArrayValue else {
-            throw EngineError.inferenceFailed("garment denoiser 输出缺失")
-        }
-
-        // 2. 主去噪网络
-        let mainInput = try MLDictionaryFeatureProvider(dictionary: [
-            "latent": latents,
-            "garment_feature": garmentFeat,
-            "sigma": MLMultiArray(shape: [1], dataType: .float32, initialValue: sigma),
-            "text_embeds": promptEmbeds["text_encoder"] ?? emptyTextEmbeds(),
-            "text_embeds_2": promptEmbeds["text_encoder_2"] ?? emptyTextEmbeds(),
-        ])
-        let mainOut = try denoiser.prediction(from: mainInput)
-        guard let velocity = mainOut.featureValue(for: "velocity")?.multiArrayValue
-            ?? mainOut.featureValue(for: "output")?.multiArrayValue else {
+        let out = try denoiser.prediction(from: input)
+        guard let velocity = out.featureValue(for: "velocity")?.multiArrayValue else {
             throw EngineError.inferenceFailed("denoiser 输出缺失")
         }
         return velocity
     }
 
-    private func emptyTextEmbeds() -> MLMultiArray {
-        // 空提示词嵌入(无条件分支);生产环境用真实 tokenizer 编码空串
-        let shape = [1, NSNumber(value: 77), NSNumber(value: 2048)]
-        return try! MLMultiArray(shape: shape, dataType: .float32, initialValue: 0.0)
+    private func emptyPromptEmbeds() -> MLMultiArray {
+        let shape = [1, NSNumber(value: 77 + t5Rows), NSNumber(value: textDim)]
+        return try! MLMultiArray(shape: shape, dataType: .float32)
+    }
+
+    // MARK: - 张量工具
+
+    /// 从 [Int32] 创建 MLMultiArray(形状 [1, n])
+    private func intArrayToMLMultiArray(_ values: [Int32], shape: [Int]) throws -> MLMultiArray {
+        let nsShape = shape.map { NSNumber(value: $0) }
+        let arr = try MLMultiArray(shape: nsShape, dataType: .int32)
+        for (i, v) in values.enumerated() {
+            arr[i] = NSNumber(value: v)
+        }
+        return arr
     }
 
     private func combineCFG(cond: MLMultiArray, uncond: MLMultiArray, scale: Float) throws -> MLMultiArray {
@@ -341,7 +352,6 @@ final class MobileVTONEngine: VTONEngineProtocol {
     }
 
     private func gaussianRandom(_ state: inout UInt64) -> Double {
-        // Box-Muller(用 SplitMix64 种子)
         state &+= 0x9E3779B97F4A7C15
         var z = state
         z = (z ^ (z >> 30)) &* 0xBF58476D1CE4E5B9
@@ -355,38 +365,70 @@ final class MobileVTONEngine: VTONEngineProtocol {
         return sqrt(-2.0 * log(max(u1, 1e-12))) * cos(2.0 * Double.pi * u2)
     }
 
-    private func decodeVAE(_ latents: MLMultiArray) throws -> UIImage {
-        guard let vaeDecoder else { throw EngineError.pipelineIncomplete("vae_decoder 未加载") }
-        let input = try MLDictionaryFeatureProvider(dictionary: ["latent": latents])
-        let out = try vaeDecoder.prediction(from: input)
-        guard let image = out.featureValue(for: "image")?.multiArrayValue
-            ?? out.featureValue(for: "decoded")?.multiArrayValue else {
-            throw EngineError.inferenceFailed("VAE 解码输出缺失")
+    private func concat(_ arrays: [MLMultiArray], axis: Int) throws -> MLMultiArray {
+        // 仅支持最后一维拼接(axis == 2 for [1,77,d])
+        guard axis == 2, arrays.count == 2,
+              arrays[0].shape[0] == arrays[1].shape[0],
+              arrays[0].shape[1] == arrays[1].shape[1] else {
+            throw EngineError.inferenceFailed("concat 参数不支持")
         }
-        return try tensorToUIImage(image)
+        let a = arrays[0], b = arrays[1]
+        let da = a.shape[2].intValue, db = b.shape[2].intValue
+        let rows = a.shape[1].intValue, batch = a.shape[0].intValue
+        let result = try MLMultiArray(shape: [batch, NSNumber(value: rows), NSNumber(value: da + db)],
+                                      dataType: .float32)
+        let ap = UnsafeMutablePointer<Float>(OpaquePointer(a.dataPointer))
+        let bp = UnsafeMutablePointer<Float>(OpaquePointer(b.dataPointer))
+        let rp = UnsafeMutablePointer<Float>(OpaquePointer(result.dataPointer))
+        for r in 0..<rows {
+            for c in 0..<da { rp[r * (da + db) + c] = ap[r * da + c] }
+            for c in 0..<db { rp[r * (da + db) + da + c] = bp[r * db + c] }
+        }
+        return result
+    }
+
+    private func padWidth(_ array: MLMultiArray, width: Int) throws -> MLMultiArray {
+        let d = array.shape[2].intValue
+        guard d <= width else { throw EngineError.inferenceFailed("pad 宽度不足") }
+        let rows = array.shape[1].intValue, batch = array.shape[0].intValue
+        let result = try MLMultiArray(shape: [batch, NSNumber(value: rows), NSNumber(value: width)],
+                                      dataType: .float32)
+        let ap = UnsafeMutablePointer<Float>(OpaquePointer(array.dataPointer))
+        let rp = UnsafeMutablePointer<Float>(OpaquePointer(result.dataPointer))
+        for r in 0..<rows {
+            for c in 0..<d { rp[r * width + c] = ap[r * d + c] }
+        }
+        return result
+    }
+
+    private func appendZeroRows(_ array: MLMultiArray, rows: Int) throws -> MLMultiArray {
+        let batch = array.shape[0].intValue
+        let curRows = array.shape[1].intValue
+        let width = array.shape[2].intValue
+        let result = try MLMultiArray(shape: [batch, NSNumber(value: curRows + rows), NSNumber(value: width)],
+                                      dataType: .float32)
+        let ap = UnsafeMutablePointer<Float>(OpaquePointer(array.dataPointer))
+        let rp = UnsafeMutablePointer<Float>(OpaquePointer(result.dataPointer))
+        let total = curRows * width
+        for i in 0..<total { rp[i] = ap[i] }
+        return result
     }
 
     private func tensorToUIImage(_ tensor: MLMultiArray) throws -> UIImage {
-        // [1,3,H,W] [-1,1] → UIImage
         let shape = tensor.shape.map { $0.intValue }
         guard shape.count == 4, shape[0] == 1, shape[1] == 3 else {
             throw EngineError.inferenceFailed("解码张量形状异常: \(shape)")
         }
         let h = shape[2], w = shape[3]
         let ptr = UnsafeMutablePointer<Float>(OpaquePointer(tensor.dataPointer))
-
         var pixels = [UInt8](repeating: 0, count: w * h * 4)
         for y in 0..<h {
             for x in 0..<w {
                 let idx = y * w + x
-                let r = clamp01(ptr[idx])
-                let g = clamp01(ptr[w*h + idx])
-                let b = clamp01(ptr[2*w*h + idx])
-                let o = idx * 4
-                pixels[o] = r
-                pixels[o+1] = g
-                pixels[o+2] = b
-                pixels[o+3] = 255
+                pixels[idx * 4] = clamp01(ptr[idx])
+                pixels[idx * 4 + 1] = clamp01(ptr[w * h + idx])
+                pixels[idx * 4 + 2] = clamp01(ptr[2 * w * h + idx])
+                pixels[idx * 4 + 3] = 255
             }
         }
         guard let ctx = CGContext(data: &pixels, width: w, height: h,
@@ -400,7 +442,7 @@ final class MobileVTONEngine: VTONEngineProtocol {
     }
 
     private func clamp01(_ v: Float) -> UInt8 {
-        UInt8(max(0, min(255, (v + 1) * 127.5)))
+        UInt8(max(0, min(255, v * 255.0)))
     }
 }
 
@@ -411,7 +453,7 @@ struct FlowMatchEulerScheduler {
     let sigmaMin: Float
     let sigmaMax: Float
 
-    /// 离散 sigma 时间表(与 diffusers 的 shift 逻辑对应)
+    /// 离散 sigma 时间表
     var timesteps: [Float] {
         var steps: [Float] = []
         for i in 0..<numSteps {
