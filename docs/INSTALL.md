@@ -6,34 +6,23 @@ CI 每次推送到 `main` 后自动产出两个工件(Artifacts):
 
 | 工件 | 内容 | 用途 |
 |---|---|---|
-| `wear-tryon-simulator-app` | `WearTryOn-simulator.app.zip` | 模拟器运行(无需开发者账号) |
+| `wear-tryon-device-app` | `WearTryOn-device.app.zip` | 真机部署(需签名)/代码签名参考 |
 | `coreml-models` | 各 `*.mlmodelc` + tokenizer | 端侧 VTON 模型(调试/二次打包用) |
 
-## 2. 模拟器运行(最快验证方式,无需 Mac 开发者账号)
+> 注:CI 构建为无签名真机目标(`generic/platform=iOS`),不含模拟器 runtime。
+> 本地模拟器运行见下方"本地构建"章节(需有 Mac 且安装对应模拟器运行时)。
 
-### 2.1 通过 CI 产物
+## 2. 模拟器运行(本地 Mac 验证,无需开发者账号)
 
-1. GitHub Actions 页面 → 最新一次 `iOS Build` 运行 → Artifacts → 下载 `wear-tryon-simulator-app`
-2. 解压得到 `WearTryOn-simulator.app`
-3. 在 Mac 上执行:
+1. 在 Mac 上克隆仓库并本地构建(需要 Xcode + 模拟器运行时):
    ```bash
-   xcrun simctl boot "iPhone 16 Pro"        # 启动模拟器(任选设备)
-   open -a Simulator
-   xcrun simctl install booted WearTryOn-simulator.app
-   xcrun simctl launch booted com.wear.tryon
+   git clone <repo-url> && cd wear-tryon
+   brew install xcodegen
+   xcodegen generate
+   pod install
+   open WearTryOn.xcworkspace   # 选模拟器,⌘R 运行
    ```
-4. 注意:模拟器没有真实相机,摄像头预览会显示黑帧/测试图案——**核心逻辑(分割/姿态/模板贴合)可运行,但建议用真机体验完整效果**。
-
-### 2.2 本地构建(有 Mac)
-
-```bash
-git clone <repo-url> && cd wear-tryon
-brew install xcodegen
-python3 scripts/download_mediapipe_models.py --out WearTryOn/Resources/Models
-xcodegen generate
-pod install
-open WearTryOn.xcworkspace   # 选模拟器,⌘R 运行
-```
+2. 注意:模拟器没有真实相机,摄像头预览会显示黑帧/测试图案——**核心逻辑(分割/姿态/模板贴合)可运行,但建议用真机体验完整效果**。
 
 ## 3. 真机运行(免费 Apple ID,7 天签名)
 

@@ -53,6 +53,7 @@ def run(cmd, **kw):
 def convert_to_coreml(torch_model, example_inputs, input_names_shapes, output_names, name, out_dir):
     """Convert a torch module to mlpackage via coremltools (CT4 torch trace)."""
     import coremltools as ct
+    import torch
 
     model = torch_model.eval()
     traced = torch.jit.trace(model, example_inputs)
