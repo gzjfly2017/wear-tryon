@@ -119,6 +119,13 @@ def main() -> None:
     denoiser = Unet_Tryon.from_pretrained(ckpt, subfolder="denoiser")
     denoiser_garment = Unet_Garment.from_pretrained(ckpt, subfolder="denoiser_garment")
 
+    # 重要:按目标分辨率重算 rope 位置编码(默认 sample_size=128 对应 1024px,
+    # 低分辨率推理必须调用 set_sample_size 重新生成 rope buffer)
+    lat = res // 8
+    denoiser.set_sample_size(lat)
+    denoiser_garment.set_sample_size(lat)
+    print(f"  sample_size set to {lat} (latent, {res}px)")
+
     latent_channels = getattr(vae.config, "latent_channels", 16)
     print(f"  latent_channels = {latent_channels}")
 
@@ -147,10 +154,10 @@ def main() -> None:
 
     # ---------------------------------------------------------------
     print("=== Converting image encoder (DINOv2) ===")
-    # pipeline: image_embeds = image_encoder(image).image_embeds
-    # Dinov2Model with reshape_hidden_states -> [1, seq, 768]; here we keep
-    # the raw image_embeds (flattened patches) which the combined denoiser
-    # feeds into encoder_hid_proj internally.
+    # pipeline: image_embeds = image_encoder(image, output_hidden_states=True).hidden_states[-2]
+    # 然后 denoiser.encoder_hid_proj(Resampler) 投影到 [1,16,4096]。
+    # 此处 DINOv2 输出 hidden_states[-2] ([1,1370,768]);
+    # encoder_hid_proj 在合并 denoiser 内部完成(见 CombinedDenoiser)。
     img = torch.rand(1, 3, 518, 518)
 
     class Dinov2Wrapper(torch.nn.Module):
@@ -158,13 +165,13 @@ def main() -> None:
             super().__init__()
             self.net = net
         def forward(self, image):
-            out = self.net(image)
-            return out.image_embeds  # [1, (37*37), 768] for 518px patch14
+            out = self.net(image, output_hidden_states=True)
+            return out.hidden_states[-2]  # [1,1370,768]
 
     convert_to_coreml(
         Dinov2Wrapper(image_encoder), (img,),
         [("image", [1, 3, 518, 518])],
-        ["image_embeds"], "image_encoder", out,
+        ["hidden_states"], "image_encoder", out,
     )
 
     # ---------------------------------------------------------------
@@ -201,15 +208,22 @@ def main() -> None:
     #   gen_condition = vae.encode(person) -> [1,16,h,w] (已由 Swift 端完成)
     #   cloth latent 由 Swift 端完成
     #   组合 latent = cat([person, cloth], dim=1) -> [1,32,h,w]
+    #   image_embeds = encoder_hid_proj(dinov2.hidden_states[-2]) -> [1,16,4096]
+    #     (投影由 Swift 端预先完成:image_encoder_hid_proj.mlmodelc 或此处包装)
     #   garment_features = denoiser_garment(cloth_latent, sigma, cloth_text_embeds)
     #   velocity = denoiser(combo_latent, sigma, text_embeds, garment_features, image_embeds)
+    #     模型内部 ip_image_proj 分支: cat([text_proj(text), image_embeds], dim=1)
     class CombinedDenoiser(torch.nn.Module):
         def __init__(self, main_net, garment_net):
             super().__init__()
             self.main = main_net
             self.garment = garment_net
+            # 将 Resampler 投影独立暴露,便于 Swift 端单独调用
+            self.image_proj = main_net.encoder_hid_proj
         def forward(self, person_latent, cloth_latent, sigma, text_embeds,
-                    cloth_text_embeds, image_embeds):
+                    cloth_text_embeds, dinov2_hidden_states):
+            # image_embeds: Resampler 投影(与 pipeline prepare_ip_adapter_image_embeds 一致)
+            image_embeds = self.image_proj(dinov2_hidden_states)
             # garment features
             _, garment_features = self.garment(
                 sample=cloth_latent,
@@ -235,17 +249,17 @@ def main() -> None:
     person_lat = torch.rand(1, latent_channels, lat, lat)
     cloth_lat = torch.rand(1, latent_channels, lat, lat)
     sigma = torch.tensor([1.0])
-    img_embeds = torch.rand(1, 37 * 37, 768)  # DINOv2 patch embeds (518px/14)
+    dino_hs = torch.rand(1, 1370, 768)  # DINOv2 hidden_states[-2]
     convert_to_coreml(
         combined,
-        (person_lat, cloth_lat, sigma, te_embeds, te_embeds, img_embeds),
+        (person_lat, cloth_lat, sigma, te_embeds, te_embeds, dino_hs),
         [
             ("person_latent", [1, latent_channels, lat, lat]),
             ("cloth_latent", [1, latent_channels, lat, lat]),
             ("sigma", [1]),
             ("text_embeds", [1, 333, 4096]),
             ("cloth_text_embeds", [1, 333, 4096]),
-            ("image_embeds", [1, 37 * 37, 768]),
+            ("dinov2_hidden_states", [1, 1370, 768]),
         ],
         ["velocity"], "denoiser", out,
     )

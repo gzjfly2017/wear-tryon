@@ -201,13 +201,14 @@ final class MobileVTONEngine: VTONEngineProtocol {
 
     private func encodeGarment(_ garmentTensor: MLMultiArray) throws -> MLMultiArray {
         guard let ie = imageEncoder else { throw EngineError.pipelineIncomplete("image encoder 未加载") }
-        // DINOv2 输入:518x518 + ImageNet 归一化(转换脚本接受 0-1 输入;归一化若在模型内则直接传入)
+        // DINOv2 输入:518x518 0-1 张量;输出 hidden_states[-2] [1,1370,768],
+        // 由合并 denoiser 内部经 encoder_hid_proj(Resampler) 投影。
         let input = try MLDictionaryFeatureProvider(dictionary: ["image": garmentTensor])
         let out = try ie.prediction(from: input)
-        guard let embeds = out.featureValue(for: "image_embeds")?.multiArrayValue else {
+        guard let hs = out.featureValue(for: "hidden_states")?.multiArrayValue else {
             throw EngineError.inferenceFailed("服装编码输出缺失")
         }
-        return embeds
+        return hs
     }
 
     // MARK: - VAE
@@ -286,7 +287,7 @@ final class MobileVTONEngine: VTONEngineProtocol {
             "sigma": sigmaArr,
             "text_embeds": promptEmbeds,
             "cloth_text_embeds": clothPromptEmbeds,
-            "image_embeds": garmentEmbeds,
+            "dinov2_hidden_states": garmentEmbeds,
         ])
         let out = try denoiser.prediction(from: input)
         guard let velocity = out.featureValue(for: "velocity")?.multiArrayValue else {

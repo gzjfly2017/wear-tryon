@@ -37,7 +37,7 @@ jobs:
           python -m pip install --upgrade pip
           # 在 CN 网络环境可用 HF_ENDPOINT=https://hf-mirror.com
           python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
-          python -m pip install diffusers transformers accelerate safetensors coremltools
+          python -m pip install "transformers==4.46.3" "diffusers==0.32.2" accelerate einops safetensors coremltools
           python -m pip install numpy pillow tqdm
 
       - name: Download Mobile-VTON weights
