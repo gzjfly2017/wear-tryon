@@ -99,6 +99,12 @@ def main() -> None:
     from diffusers import AutoencoderKL
     from transformers import CLIPTextModelWithProjection, AutoModel
 
+    # coremltools 兼容性检查:官方测试版本为 torch 2.7.0
+    torch_major, torch_minor = torch.__version__.split(".")[:2]
+    if (int(torch_major), int(torch_minor)) != (2, 7):
+        print(f"[warn] torch {torch.__version__} 未经 coremltools 测试;"
+              f"建议使用 2.7.0(已知 2.13 会在 CLIP 转换时报 int op 错误)")
+
     from Mobile_VTON.models.autoencoders.vae import Decoder
     from Mobile_VTON.models.unets.unet_2d_condition_tryon import UNet2DConditionModel as Unet_Tryon
     from Mobile_VTON.models.unets.unet_2d_condition_garment import UNet2DConditionModel as Unet_Garment
