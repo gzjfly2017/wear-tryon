@@ -87,15 +87,17 @@ final class BodyPerceptionEngine {
                 return nil
             }
 
-            let maskImage: CGImage? = {
-                guard let result = try? segmenter.segment(image: image) else { return nil }
-                return result.categoryMask?.image
-            }()
+            // 分割掩码:显式处理嵌套可选,避免闭包返回类型推断歧义
+            var maskImage: CGImage?
+            if let result = try? segmenter.segment(image: image) {
+                maskImage = result.categoryMask?.image
+            }
 
-            let landmarks: [NormalizedLandmark] = {
-                guard let result = try? poseLandmarker.detect(image: image) else { return [] }
-                return result.landmarks.first ?? []
-            }()
+            // 姿态关键点
+            var landmarks: [NormalizedLandmark] = []
+            if let result = try? poseLandmarker.detect(image: image) {
+                landmarks = result.landmarks.first ?? []
+            }
 
             return BodyPerception(segmentationMask: maskImage, landmarks: landmarks)
         }

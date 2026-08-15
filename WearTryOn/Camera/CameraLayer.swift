@@ -88,7 +88,8 @@ final class CameraLayer: NSObject, ObservableObject {
         // 前置摄像头镜像,保证预览方向正确
         if let connection = videoOutput.connection(with: .video) {
             if connection.isVideoMirroringSupported { connection.isVideoMirrored = true }
-            if connection.isVideoRotationAngleSupported { connection.videoRotationAngle = 90 }
+            // isVideoRotationAngleSupported 是方法(接受角度参数)
+            if connection.isVideoRotationAngleSupported(90) { connection.videoRotationAngle = 90 }
         }
 
         session.commitConfiguration()
