@@ -178,6 +178,7 @@ jobs:
 
       # ------------------------------------------------------------------
       # 发布 GitHub Release(公开仓库资产可匿名下载 + gh-proxy 镜像加速)
+      # GitHub Release 资产上限 2GB,故把 4.65GB 的 zip 拆分为 1.5GB 分卷
       # 使用仓库内置 GITHUB_TOKEN,无需额外配置
       # ------------------------------------------------------------------
       - name: Publish GitHub Release
@@ -187,15 +188,18 @@ jobs:
         run: |
           cd dist
           TAG="v1.0.0"
+          # 拆分 zip 为 1.5GB 分卷(Release 资产上限 2GB)
+          split -b 1500m WearTryOn-device.app.zip "WearTryOn-device.app.zip.part"
+          ls -la WearTryOn-device.app.zip.part*
           # 删除旧 release 同名资产(幂等重跑)
           gh release delete "$TAG" --yes --cleanup-tag 2>/dev/null || true
           gh release create "$TAG" \
-            WearTryOn-device.app.zip \
+            WearTryOn-device.app.zip.part* \
             --title "WearTryOn v1.0.0" \
-            --notes "iOS 实时视频试穿第一版(纯端侧,无签名真机包)" \
+            --notes "iOS 实时视频试穿第一版(纯端侧,无签名真机包)。分卷合并:cat WearTryOn-device.app.zip.part* > WearTryOn-device.app.zip" \
             --generate-notes 2>/dev/null || \
           gh release create "$TAG" \
-            WearTryOn-device.app.zip \
+            WearTryOn-device.app.zip.part* \
             --title "WearTryOn v1.0.0" \
-            --notes "iOS 实时视频试穿第一版(纯端侧,无签名真机包)"
+            --notes "iOS 实时视频试穿第一版(纯端侧,无签名真机包)。分卷合并:cat WearTryOn-device.app.zip.part* > WearTryOn-device.app.zip"
           echo "RELEASE_URL=https://github.com/gzjfly2017/wear-tryon/releases/tag/$TAG"
