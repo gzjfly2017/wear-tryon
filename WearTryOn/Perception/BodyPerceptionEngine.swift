@@ -81,7 +81,7 @@ final class BodyPerceptionEngine {
 
     /// 对单帧做分割 + 姿态(内部串行队列,帧率由调用方节流)。
     func process(pixelBuffer: CVPixelBuffer) -> BodyPerception? {
-        queue.sync {
+        queue.sync { () -> BodyPerception? in
             guard let segmenter, let poseLandmarker,
                   let image = try? MPImage(pixelBuffer: pixelBuffer) else {
                 return nil
