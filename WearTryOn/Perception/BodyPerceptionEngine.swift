@@ -108,7 +108,8 @@ final class BodyPerceptionEngine {
     private static func maskToCGImage(_ mask: Mask) -> CGImage? {
         let w = mask.width
         let h = mask.height
-        guard w > 0, h > 0, let data = mask.uint8Data else { return nil }
+        guard w > 0, h > 0 else { return nil }
+        let data = mask.uint8Data  // 非可选 UnsafePointer<UInt8>
 
         var pixels = [UInt8](repeating: 0, count: w * h * 4)
         for i in 0..<(w * h) {
