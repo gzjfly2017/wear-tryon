@@ -87,10 +87,11 @@ final class BodyPerceptionEngine {
                 return nil
             }
 
-            // 分割掩码:显式处理嵌套可选,避免闭包返回类型推断歧义
+            // 分割掩码:从 Mask 的原始像素数据构建 CGImage
             var maskImage: CGImage?
-            if let result = try? segmenter.segment(image: image) {
-                maskImage = result.categoryMask?.image
+            if let result = try? segmenter.segment(image: image),
+               let mask = result.categoryMask {
+                maskImage = Self.maskToCGImage(mask)
             }
 
             // 姿态关键点
@@ -101,6 +102,30 @@ final class BodyPerceptionEngine {
 
             return BodyPerception(segmentationMask: maskImage, landmarks: landmarks)
         }
+    }
+
+    /// 把 MediaPipe Mask 的 uint8 像素数据转为 CGImage(白色=人体,黑色=背景)
+    private static func maskToCGImage(_ mask: Mask) -> CGImage? {
+        let w = mask.width
+        let h = mask.height
+        guard w > 0, h > 0, let data = mask.uint8Data else { return nil }
+
+        var pixels = [UInt8](repeating: 0, count: w * h * 4)
+        for i in 0..<(w * h) {
+            let v = data[i]  // 0-255,类别掩码
+            pixels[i * 4] = v
+            pixels[i * 4 + 1] = v
+            pixels[i * 4 + 2] = v
+            pixels[i * 4 + 3] = 255
+        }
+        guard let ctx = CGContext(data: &pixels, width: w, height: h,
+                                  bitsPerComponent: 8, bytesPerRow: w * 4,
+                                  space: CGColorSpaceCreateDeviceRGB(),
+                                  bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue),
+              let cg = ctx.makeImage() else {
+            return nil
+        }
+        return cg
     }
 
     deinit {
