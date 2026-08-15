@@ -1,6 +1,7 @@
 # WearTryOn — iOS 实时视频试穿(第一版)
 
 纯端侧 iOS 试穿 App:MediaPipe 实时预览(30fps)+ 端侧 Mobile-VTON 定格高清。
+**状态:v1.0 构建成功 ✅(CI 全绿,模型转换 + App 编译完成)**
 
 ## 架构
 
@@ -22,20 +23,21 @@ WearTryOn/
   Rendering/      实时合成(CPU+Accelerate,后续 Metal)
   Models/         版型模板/布料预设/服装选择
   Core/           协调器、关键帧选择器
-  VTON/           Mobile-VTON CoreML 引擎 + CLIP tokenizer
+  VTON/           Mobile-VTON CoreML 引擎 + CLIP tokenizer + 张量工具
   UI/             SwiftUI 界面
   Resources/Models/   tflite + mlmodelc(CI 生成)
-scripts/          权重下载、模型转换、MediaPipe 模型下载
-.github/workflows/  CI(macOS runner)
+scripts/          权重下载、模型转换、管线验证
+.github/workflows/  CI(macOS runner,公开仓库免费无限额度)
+docs/             安装与发布指南
 ```
 
 ## 构建(CI)
 
 推送到 GitHub 后自动:
-1. 下载 Mobile-VTON 权重并转换为 CoreML(convert-models job)
-2. 下载 MediaPipe 模型、生成工程、构建模拟器包(build-ios job)
+1. 下载 Mobile-VTON 权重并转换为 CoreML(convert-models job,产出 7 个 mlmodelc)
+2. 生成工程、构建真机目标包(build-ios job,无签名)
 
-产出:`dist/WearTryOn-simulator.app.zip`(模拟器运行)+ `coreml-models` 工件。
+产出:`wear-tryon-device-app` 工件 + `coreml-models` 工件(2.3GB)。
 
 ## 本地构建(Mac)
 
