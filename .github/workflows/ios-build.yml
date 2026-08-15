@@ -93,6 +93,9 @@ jobs:
     runs-on: macos-15
     timeout-minutes: 60
     needs: convert-models
+    # 创建 Release 需要写权限(默认 GITHUB_TOKEN 只读)
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
         with:
